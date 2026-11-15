@@ -44,10 +44,10 @@ class ConfigTest(unittest.TestCase):
         self.assertNotIn("bogus", cfg)
 
     def test_secrets_never_appear_as_values(self):
-        with mock.patch.dict(os.environ, {"SILICONFLOW_API_KEY": "sk-SECRET-VALUE"}, clear=True):
+        with mock.patch.dict(os.environ, {"SILICONFLOW_API_KEY": "YOUR_SILICONFLOW_API_KEY_HERE"}, clear=True):
             with mock.patch("douyin2md.config.config_path", return_value=None):
                 safe = redacted(load_config())
-        self.assertNotIn("sk-SECRET-VALUE", json.dumps(safe, ensure_ascii=False))
+        self.assertNotIn("YOUR_SILICONFLOW_API_KEY_HERE", json.dumps(safe, ensure_ascii=False))
         self.assertEqual(safe["SILICONFLOW_API_KEY"], "set")
 
 

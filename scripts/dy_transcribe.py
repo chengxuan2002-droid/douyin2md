@@ -165,15 +165,19 @@ def load_engine(engine: str, args, api_key: str):
             print("[FAIL] 缺少 API Key。设置 SILICONFLOW_API_KEY，或改用 --engine sherpa",
                   file=sys.stderr)
             raise SystemExit(1)
-        return {"kind": "cloud", "api_base": args.api_base or SILICONFLOW_URL,
-                "api_key": api_key, "model": args.model or SILICONFLOW_MODEL}
+        handle = {"kind": "cloud", "api_base": args.api_base or SILICONFLOW_URL,
+                  "model": args.model or SILICONFLOW_MODEL}
+        handle["api_key"] = api_key
+        return handle
     if engine == "openai":
         if not api_key:
             print("[FAIL] 缺少 API Key。设置 OPENAI_API_KEY 或传 --api-key",
                   file=sys.stderr)
             raise SystemExit(1)
-        return {"kind": "cloud", "api_base": args.api_base or OPENAI_URL,
-                "api_key": api_key, "model": args.model or "whisper-1"}
+        handle = {"kind": "cloud", "api_base": args.api_base or OPENAI_URL,
+                  "model": args.model or "whisper-1"}
+        handle["api_key"] = api_key
+        return handle
     raise SystemExit(f"[FAIL] 未知引擎: {engine}")
 
 
