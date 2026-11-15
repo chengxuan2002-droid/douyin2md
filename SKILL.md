@@ -106,5 +106,7 @@ bash bin/douyin2md cookie --check         # 校验 cookie 是否仍有效
 - **禁止臆造**：转写失败或为空时如实说明，绝不编造视频内容。
 - 原文有缺陷时保留原样，问题写在正文外的编者注里。
 - 合规：仅用于自己创作或已获授权的内容，下载内容版权归原作者。
-- 深入阅读：`docs/agent-compatibility.md`（各框架接入）、`docs/configuration.md`（依赖与配置）、
-  `docs/architecture.md`（流水线）、`docs/troubleshooting.md`（风控与故障排查）。
+- 用户要求「与之前提取的几期对比 / 有什么进阶点」时，按
+  `docs/troubleshooting.md` 的「系列内容的跨期对比」做表格与脉络图，只依据已提取内容。
+- 深入阅读：`docs/agent-compatibility.md`（各框架接入与加载陷阱）、`docs/configuration.md`（依赖与配置）、
+  `docs/architecture.md`（流水线）、`docs/troubleshooting.md`（风控、故障表、内容质量）。
