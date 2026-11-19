@@ -3,6 +3,9 @@
 把一个抖音链接（或本地音视频）变成一篇带 YAML frontmatter 的 Markdown 文稿：
 元信息表 + 视频描述文案 + 带时间戳的口播转写正文。
 
+微信视频号链接会自动按来源降级：预览页不下发视频流，只取元数据与高清封面，产出明确
+标注缺失项的 `metadata_only` 文稿（不臆造转写或时间戳）。
+
 这既是一个**标准 Agent Skill**，也是一个普通 Python 项目。任何支持 Agent Skills 的框架
 （Claude Code、Codex、WorkBuddy、Cursor、Gemini CLI、GitHub Copilot CLI、OpenCode、goose…）
 把本仓库放进它的 skills 目录就能识别，**无需修改仓库内任何文件**。
@@ -18,8 +21,9 @@
 | 命令依赖 cwd 或某个固定安装目录 | 入口用 `BASH_SOURCE` 自定位技能根，任意工作目录可调用 |
 | 各框架安装方式靠口头说明 | `docs/agent-compatibility.md` 逐框架给出目录与命令 |
 
-原始脚本 `scripts/*.py` **保持字节不变**，作为兼容层继续可用；新入口只做转发，
-因此既统一了接口，也不会破坏已有调用或历史笔记里的命令。
+原始脚本 `scripts/*.py` 作为兼容层继续可单独调用，命令行参数与抖音产物格式保持兼容；
+新入口只做转发，历史笔记里的命令依然有效。本版为来源适配对其中 3 个脚本做了增量修改
+并新增 `wx_fetch.py`，详见 `CHANGELOG.md` 与 `docs/architecture.md`。
 
 ## 快速开始
 
@@ -67,8 +71,9 @@ bash bin/douyin2md cookie            # 浏览器登录导出 cookie
 ## 统一命令速查
 
 ```bash
-bash bin/douyin2md url "https://v.douyin.com/xxxx/" -o ./notes          # 单条
-bash bin/douyin2md batch urls.txt -o ./notes                             # 批量
+bash bin/douyin2md url "https://v.douyin.com/xxxx/" -o ./notes          # 单条抖音
+bash bin/douyin2md url "https://weixin.qq.com/sph/xxxx" -o ./notes      # 视频号（自动降级）
+bash bin/douyin2md batch urls.txt -o ./notes                             # 批量（按来源分流）
 bash bin/douyin2md transcribe ./会议录音.mp4 -o 会议录音.json             # 本地单文件
 bash bin/douyin2md transcribe ./访谈集/ -o ./访谈转录/                    # 本地目录批量
 bash bin/douyin2md capture "https://v.douyin.com/xxxx/" -o ./.artifacts  # 风控兜底
@@ -77,6 +82,18 @@ bash bin/douyin2md cookie --check
 bash bin/douyin2md doctor --json                                         # 机器可读体检
 bash bin/douyin2md config                                                # 生效配置（密钥脱敏）
 ```
+
+`url` / `batch` 先按来源分流：抖音走完整三段式；视频号走只读元数据 + 高清封面，产出
+`metadata_only` 文稿（自动声明缺失项，不臆造时间戳）；未知来源返回 `unsupported_source`。
+批量结束会输出状态清单。视频号需要逐字稿时，请在微信客户端保存视频或录屏后用同一份
+`meta.json` 合并转写结果：
+
+```bash
+bash bin/douyin2md transcribe ./视频.mp4 -o t.json
+bash bin/douyin2md to-md --meta ./notes/.artifacts/<id>.meta.json --transcript t.json -o ./notes
+```
+
+详见 `SKILL.md` 的「非抖音来源」与 `docs/troubleshooting.md` 的视频号章节。
 
 常用参数：`--engine auto|sherpa|siliconflow|openai|local`、`--model`、`--language zh`、
 `--cookies`、`--cookies-from-browser`、`--no-timestamps`、`--keep-audio`、`-o`、`-q`。
@@ -99,10 +116,12 @@ douyin2md/
 │   ├── __init__.py
 │   ├── __main__.py            # python3 -m douyin2md
 │   ├── cli.py                 # 子命令解析、配置注入、转发
-│   └── config.py              # 配置优先级与脱敏
-├── scripts/                   # 原始流水线脚本（兼容层，保持原样）
-│   ├── dy.py                  # 链接 → Markdown（单条 + 批量）
-│   ├── dy_fetch.py            # 元数据 + 音频
+│   ├── config.py              # 配置优先级与脱敏
+│   └── sources.py             # 来源判定 / 状态契约（唯一判定源，纯逻辑）
+├── scripts/                   # 流水线脚本（兼容层，可单独调用）
+│   ├── dy.py                  # 链接 → Markdown（单条 + 批量，按来源分流）
+│   ├── dy_fetch.py            # 抖音元数据 + 音频
+│   ├── wx_fetch.py            # 视频号只读元数据 + 高清封面（新增）
 │   ├── dy_transcribe.py       # 语音转文字
 │   ├── dy_tomd.py             # 拼装 Markdown
 │   ├── dy_model.py            # 本地模型管理
@@ -110,15 +129,15 @@ douyin2md/
 │   └── dy_browser_capture.py  # 浏览器拦截兜底
 ├── docs/                      # 框架兼容、配置、架构、排障
 ├── examples/                  # 输出样例、链接清单、CLI 与提示词示例
-└── tests/                     # 配置与入口的零依赖单测
+└── tests/                     # 零依赖单测：配置、入口、来源判定、适配器契约、降级与回归
 ```
 
 ## 深入文档
 
 - `docs/agent-compatibility.md` — 各框架如何识别与安装（无需改代码）
 - `docs/configuration.md` — 依赖分层、配置优先级、环境变量全表
-- `docs/architecture.md` — 三段式流水线与兼容层设计
-- `docs/troubleshooting.md` — 风控、cookie、模型、解释器踩坑
+- `docs/architecture.md` — 来源适配层、三段式流水线与降级契约
+- `docs/troubleshooting.md` — 风控、cookie、模型、解释器踩坑、视频号预览页限制
 - `examples/` — 可照抄的命令与 agent 提示词
 
 ## 合规与许可

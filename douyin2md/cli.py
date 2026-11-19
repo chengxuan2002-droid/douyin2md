@@ -21,6 +21,9 @@ from pathlib import Path
 
 from . import __version__
 from .config import ROOT, config_path, load_config, pick, redacted
+from .sources import (
+    SUPPORTED_SOURCES, UNSUPPORTED, WEIXIN_CHANNELS, detect_source, source_advice,
+)
 
 SCRIPTS = ROOT / "scripts"
 
@@ -28,7 +31,7 @@ OPTIONAL_MODULES = (
     ("yt_dlp", "获取元数据/音频（核心）"),
     ("sherpa_onnx", "本地离线中文转写（可选 local）"),
     ("numpy", "本地转写数值依赖（可选 local）"),
-    ("playwright", "浏览器登录 / 拦截兜底（可选 browser）"),
+    ("playwright", "浏览器登录 / 抖音拦截兜底 / 视频号预览页渲染（可选 browser）"),
     ("browser_cookie3", "从浏览器读取 cookie（可选 browser）"),
 )
 SECRET_ENV = ("SILICONFLOW_API_KEY", "OPENAI_API_KEY")
@@ -91,6 +94,11 @@ def _pipeline_args(ns, cfg) -> list[str]:
 
 
 def cmd_url(ns, cfg) -> int:
+    source = detect_source(ns.target)
+    if source == WEIXIN_CHANNELS:
+        print(f"[来源] 微信视频号 → {source_advice(source)}", file=sys.stderr)
+    elif source == UNSUPPORTED:
+        print(f"[来源] 未识别的链接 → {source_advice(source)}", file=sys.stderr)
     return _exec(["dy.py", ns.target, *_pipeline_args(ns, cfg)])
 
 
@@ -177,6 +185,7 @@ def cmd_doctor(ns, cfg) -> int:
         "config_file": str(config_path(ns.config)) if config_path(ns.config) else None,
         "home": str(home),
         "home_exists": home.is_dir(),
+        "supported_sources": list(SUPPORTED_SOURCES),
         "ffmpeg": shutil.which("ffmpeg"),
         "ffprobe": shutil.which("ffprobe"),
         "cookies_file": str(home / "cookies.txt"),
@@ -221,7 +230,7 @@ def cmd_config(ns, cfg) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="douyin2md",
-        description="抖音视频 / 本地音视频 → Markdown 文稿（统一入口）",
+        description="抖音视频 / 微信视频号元数据 / 本地音视频 → Markdown 文稿（统一入口）",
         epilog="所有子命令都可用 --config 指定配置文件；详见 docs/configuration.md",
     )
     ap.add_argument("--version", action="version", version=f"douyin2md {__version__}")
@@ -229,11 +238,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="command", required=True, metavar="<子命令>")
 
     shared = _pipeline_parent()
-    p = sub.add_parser("url", parents=[shared], help="单个抖音链接/分享文案 → Markdown")
-    p.add_argument("target", help="链接或含链接的分享文案")
+    p = sub.add_parser("url", parents=[shared], help="单个链接/分享文案 → Markdown（按来源自动分流）")
+    p.add_argument("target", help="抖音/视频号链接或含链接的分享文案")
     p.set_defaults(func=cmd_url)
 
-    p = sub.add_parser("batch", parents=[shared], help="批量链接文件 → 每篇一个 Markdown")
+    p = sub.add_parser("batch", parents=[shared], help="批量链接文件 → 每篇一个 Markdown（按来源分流）")
     p.add_argument("links_file", help="每行一个链接/分享文案的文件")
     p.set_defaults(func=cmd_batch)
 

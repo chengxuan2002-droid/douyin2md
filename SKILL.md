@@ -1,6 +1,6 @@
 ---
 name: douyin2md
-description: 把抖音视频或本地音视频转成 Markdown 文稿。用户发抖音链接（v.douyin.com 短链、www.douyin.com/video/<id>、或含链接的分享文案）要求"转文字/提取文案/整理成笔记/存成 md/生成逐字稿/总结一下"时使用；一次发多个链接或整个列表/收藏夹要求"批量/全部转成 md"时也使用；发本地音视频文件或目录要求转录时同样适用。自动区分单条与批量，无需用户选择脚本。支持元数据提取、语音转写（本地离线或云端）、带时间戳正文、YAML frontmatter。
+description: 把抖音视频或本地音视频转成 Markdown 文稿。用户发抖音链接（v.douyin.com 短链、www.douyin.com/video/<id>、或含链接的分享文案）要求"转文字/提取文案/整理成笔记/存成 md/生成逐字稿/总结一下"时使用；一次发多个链接或整个列表/收藏夹要求"批量/全部转成 md"时也使用；发本地音视频文件或目录要求转录时同样适用。自动区分单条与批量，无需用户选择脚本。支持元数据提取、语音转写（本地离线或云端）、带时间戳正文、YAML frontmatter。发微信视频号链接（weixin.qq.com/sph/...）时自动按来源降级为元数据+高清封面摘要，并明确标注缺失项。
 license: MIT
 ---
 
@@ -27,8 +27,8 @@ douyin2md --help                   # pip install -e . 之后的等价命令
 
 | 子命令 | 作用 |
 | --- | --- |
-| `url <链接或文案>` | 单个抖音链接 → Markdown |
-| `batch <links.txt>` | 批量链接，每条一篇 Markdown，单条失败不中断 |
+| `url <链接或文案>` | 单个链接 → Markdown（自动按来源分流：抖音全链路 / 视频号元数据降级） |
+| `batch <links.txt>` | 批量链接，每条一篇 Markdown，单条失败不中断，结束输出状态清单 |
 | `transcribe <文件/目录>` | 本地音视频 → 转写 JSON（无需 cookie） |
 | `to-md --meta <json>` | 元数据 + 转写 JSON → Markdown |
 | `capture <链接>` | 风控兜底：浏览器拦截 detail 响应并下载 mp4 |
@@ -44,6 +44,7 @@ douyin2md --help                   # pip install -e . 之后的等价命令
 | 用户给的东西 | 执行 |
 | --- | --- |
 | 1 个抖音链接 / 1 段分享文案 | `bash bin/douyin2md url "<链接或文案>" -o ./notes` |
+| 1 个微信视频号链接 | `bash bin/douyin2md url "<链接>" -o ./notes`（自动降级，见下节） |
 | 多个链接 / 列表 / 收藏夹 / "全部" | 逐行写入临时文件，再 `bash bin/douyin2md batch urls.txt -o ./notes` |
 | 1 个本地音视频文件 | `bash bin/douyin2md transcribe ./录音.mp4 -o 录音.json` |
 | 本地一个目录 / 一批文件 | `bash bin/douyin2md transcribe ./访谈集/ -o ./访谈转录/`（模型只加载一次） |
@@ -101,9 +102,32 @@ bash bin/douyin2md cookie --check         # 校验 cookie 是否仍有效
 ① 换一档模型重跑交叉校验 → ② `ffmpeg` 抽帧读画面字幕定案 → ③ 查项目官网/仓库核对拼写。
 两个模型一致也可能都错，不能据此下结论。抽帧看片头标题、结构切换处、结尾念产品名处。
 
+## 非抖音来源：微信视频号（只读降级）
+
+**自动按来源分流，不要让用户选脚本，也不要把视频号链接当成抖音抓取失败去反复重试。**
+
+| 来源 | 判定 | 行为 |
+| --- | --- | --- |
+| 抖音 | `v.douyin.com` / `www.douyin.com/video/<id>` | 原三段式流水线，产出逐字稿 |
+| 微信视频号 | `weixin.qq.com/sph/<id>` / `channels.weixin.qq.com` | 只读提取元数据 + 高清封面，产出 `metadata_only` 文稿 |
+| 其它链接 | 未知来源 | 返回 `unsupported_source` 并提示改用 `transcribe`，不丢给 yt-dlp |
+
+平台在预览页**不下发视频流**（接口 `get_feed_info` 无 `videoUrl` / `h264` / 时长字段，页面提示「可扫码前往微信观看」）。这是平台侧策略，不是抓取失败；补 cookie、换 UA、重试都不会改变结果。因此：
+
+- 文稿会自动带 `extraction_status: metadata_only`、frontmatter 的 `missing` 清单，以及正文顶部的「摘要说明（请先读）」区块；模板**不会编造**转写正文、字幕或视频内时间戳。
+- 可用信息只有：官方描述 `desc`、作者、发布时间、互动数、高清封面画面文字。外部资料必须单列章节并标注「非视频内容」，不要冒充视频转写。
+- 需要逐字稿时走 Tier 3：请用户在微信客户端保存视频或录屏 → 提供本地文件 →
+  `bash bin/douyin2md transcribe <文件> -o t.json` →
+  `bash bin/douyin2md to-md --meta <同一份 meta.json> --transcript t.json -o ./notes`。
+  传入非空转写后模板自动升级为完整文稿，不再显示降级说明。
+- 批量混合来源时单条降级不中断，结束按 `ok / metadata_only / media_blocked_by_platform /
+  need_login / unsupported_source` 输出状态清单。
+- 合规：不绕过鉴权、客户端校验或 DRM；仅用于自己创作或已获授权的内容。
+
 ## 注意事项
 
-- **禁止臆造**：转写失败或为空时如实说明，绝不编造视频内容。
+- **禁止臆造**：转写失败或为空时如实说明，绝不编造视频内容；视频号 `metadata_only` 文稿尤其不得编造时间戳。
+- **视频号链接不要按抖音链路重试**：平台侧不下发视频流，按上节降级处理即可。
 - 原文有缺陷时保留原样，问题写在正文外的编者注里。
 - 合规：仅用于自己创作或已获授权的内容，下载内容版权归原作者。
 - 用户要求「与之前提取的几期对比 / 有什么进阶点」时，按

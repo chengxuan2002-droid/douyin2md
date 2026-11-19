@@ -19,6 +19,8 @@
 | 换 `paraformer-zh-int8` 后转写 0 字 | `model download` 顺带下的 VAD 与 paraformer 不兼容 | 把 `silero_vad.onnx` 改名成 `*.incompatible`，退化为固定分段 |
 | 批量个别失败 | 单条被限流/视频删除 | 不中断整批，结束后对失败条单独重试 |
 | cookie 有效但仍 403 / detail 空 | 已升级 msToken + `a_bogus` 签名校验 | 改用 `bash bin/douyin2md capture "<链接>"` |
+| `Unsupported URL`（非抖音链接） | 链接来源未被识别，旧版会原样丢给 yt-dlp | 新版按来源分流：视频号走元数据降级，未知来源返回 `unsupported_source` 并提示本地文件改用 `transcribe` |
+| 拿到元数据但没有任何视频流字段 | 微信视频号预览页的平台侧策略，不是抓取失败 | 见下节；不要补抖音 cookie、不要跑 `capture`、不要反复重试 |
 | `ModuleNotFoundError: No module named 'playwright'` | 用错 Python 解释器 | 见下节 |
 
 ## 风控升级：为什么需要 capture
@@ -34,6 +36,28 @@
 
 产出 `<out>/<aweme_id>.detail.json`（desc / 作者 / create_time / duration / statistics）
 与 `<out>/<name>.mp4`。元数据可直接取用，不必绕 `dy_tomd.py` 模板。
+
+## 微信视频号预览页：为什么拿不到视频流（2026-11-19 实测）
+
+样本 `https://weixin.qq.com/sph/AiQ59Q9O3y`。**结论：平台侧策略，不是抓取失败。**
+`url` 子命令会自动分流到 `scripts/wx_fetch.py`，产出 `metadata_only` 文稿（带缺失清单）与高清封面。
+
+| 现象 | 原因 / 正确做法 |
+| --- | --- |
+| 短链 HEAD 返回 405 | 必须用 GET；301 到 `channels.weixin.qq.com/finder-preview/pages/sph?id=<id>` |
+| 落地页只有约 2.7KB | SPA 空壳，内容由 `get_feed_info` 接口下发，抓静态 HTML 无用 |
+| 微信 UA 下页面「空白」 | **HTTP 响应体与桌面 UA 完全相同**（实测均 2733 字节），差异在前端 `WeixinJSBridge` 渲染分支；统一用桌面 Chrome UA |
+| 裸 HTTP 直接请求接口 | 返回 `{"errCode":-1,"errMsg":"permission verification failed"}`；接口带页面上下文校验，必须用真实浏览器渲染后**拦截响应**（方法以实际拦截为准，本次为 GET） |
+| 接口不下发视频流 | `feedInfo` 仅 `picInfo/description/jumpInfo/*CountFmt/createtime/isHardAd/coverUrl`，无 `duration` 与任何流字段；页面渲染「可扫码前往微信观看此内容」 |
+| 换入口仍无法播放 | `/finder-preview/pages/feed?eid=` → 「此内容暂时无法播放」；`/web/pages/feed?eid=` → 「当前微信版本较低…」，属客户端版本门槛，不是单纯 cookie 问题 |
+| 换 exportId 重试无效 | `sceneInfo.dynamicExportId` 每次请求取值不同且有 `expiredTime`，是动态时效凭证，不可缓存复用 |
+| 封面分辨率只有 540×720 | `coverUrl` 末尾 `wxampicformat=503&picformat=200` 是缩图参数，去掉后 1080×1440 |
+| 互动数看起来对不上 | 页面图标顺序与接口字段命名有歧义（实测 `favCountFmt=253 / forwardCountFmt=1331 / likeCountFmt=223 / commentCountFmt=25`，页面依次显示 253/1331/223/25），按接口**原始字段名**映射，不做二次推断 |
+
+需要逐字稿时，只能由用户在微信客户端保存视频或录屏，提供本地文件后走
+`transcribe` → `to-md`；传入非空转写后模板自动升级为完整文稿。
+`capture` 只针对抖音 `aweme/detail` 的 msToken + `a_bogus`，对视频号不适用。
+不绕过鉴权、客户端校验或 DRM。
 
 ## 环境相关踩坑（2026-09 本机实测）
 

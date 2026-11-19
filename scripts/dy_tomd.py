@@ -17,7 +17,20 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from douyin2md.sources import EXTRACTION_FULL, WEIXIN_CHANNELS, meta_id  # noqa: E402
+
 UNSAFE = r'[\\/:*?"<>|\r\n\t]'
+
+MISSING_LABELS = {
+    "video_stream": "视频流（mp4 / 音频）",
+    "asr": "语音转写",
+    "subtitles": "字幕",
+    "timestamps": "视频内时间戳",
+}
 
 
 def safe_name(s: str, limit: int = 60) -> str:
@@ -63,14 +76,27 @@ def fmt_date(s):
 
 def build(meta: dict, transcript: dict, with_ts: bool = True,
           frontmatter: bool = True, summary: str = "") -> str:
-    title = meta.get("title") or meta.get("desc") or "抖音视频"
+    source = meta.get("source") or "douyin"
+    is_weixin = source == WEIXIN_CHANNELS
+    title = meta.get("title") or meta.get("desc") or ("微信视频号内容" if is_weixin else "抖音视频")
     author = meta.get("author") or "-"
     url = meta.get("webpage_url") or "-"
-    vid = meta.get("aweme_id") or "-"
+    vid = meta_id(meta)
     dur = meta.get("duration_text") or (fmt_ts(meta.get("duration_sec")) if meta.get("duration_sec") else "-")
     tags = meta.get("tags") or []
     text = (transcript or {}).get("text") or ""
     segments = (transcript or {}).get("segments") or []
+    missing = list(meta.get("missing") or [])
+    evidence = list(meta.get("evidence") or [])
+    declared = meta.get("extraction_status") or EXTRACTION_FULL
+    # 传入非空转写说明内容已由用户补齐（方案 Tier 3），此时不再按降级输出
+    degraded = declared != EXTRACTION_FULL and not text
+    if degraded:
+        doc_type = f"{source}-summary"
+    elif source == "douyin":
+        doc_type = "douyin-transcript"
+    else:
+        doc_type = f"{source}-transcript"
 
     out = []
     if frontmatter:
@@ -81,7 +107,17 @@ def build(meta: dict, transcript: dict, with_ts: bool = True,
         out.append(f"aweme_id: \"{vid}\"")
         out.append(f"date: {fmt_date(meta.get('upload_date'))}")
         out.append(f"duration: {dur}")
-        out.append(f"type: douyin-transcript")
+        out.append(f"type: {doc_type}")
+        # 旧抖音 meta 不新增任何字段，保证既有产物逐字兼容
+        if source != "douyin":
+            out.append(f"platform: {json.dumps(source, ensure_ascii=False)}")
+            out.append(f"content_id: {json.dumps(vid, ensure_ascii=False)}")
+        if degraded:
+            out.append(f"extraction_status: {declared}")
+            if missing:
+                out.append("missing:")
+                for item in missing:
+                    out.append(f"  - {item}")
         out.append(f"transcribed_at: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         if (transcript or {}).get("engine"):
             out.append(f"asr_engine: {transcript['engine']}")
@@ -95,10 +131,26 @@ def build(meta: dict, transcript: dict, with_ts: bool = True,
     out.append(f"# {title}")
     out.append("")
 
+    if degraded:
+        out.append("## 摘要说明（请先读）")
+        out.append("")
+        out.append("**本次未取得视频流，因此没有语音转写、字幕和视频内时间点。** "
+                   "下文仅使用可直接验证的公开页面信息，不臆造视频内容。")
+        out.append("")
+        if missing:
+            out.append("| 缺失内容 | 状态 |")
+            out.append("| --- | --- |")
+            for item in missing:
+                out.append(f"| {MISSING_LABELS.get(item, item)} | 未取得 |")
+            out.append("")
+        for line in evidence:
+            out.append(f"> 依据：{line}")
+        out.append("")
+
     out.append("| 项目 | 值 |")
     out.append("| --- | --- |")
     out.append(f"| 作者 | {author} |")
-    out.append(f"| 视频 ID | `{vid}` |")
+    out.append(f"| {'内容 ID' if is_weixin else '视频 ID'} | `{vid}` |")
     out.append(f"| 时长 | {dur} |")
     out.append(f"| 发布 | {fmt_date(meta.get('upload_date'))} |")
     out.append(f"| 点赞 | {fmt_count(meta.get('like_count'))} |")
@@ -115,7 +167,7 @@ def build(meta: dict, transcript: dict, with_ts: bool = True,
         out.append("")
 
     desc = (meta.get("desc") or "").strip()
-    if desc and desc != title:
+    if desc and (desc != title or degraded):
         out.append("## 视频文案")
         out.append("")
         out.append(desc)

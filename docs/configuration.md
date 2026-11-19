@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `core` | 抖音链接解析、元数据与音频获取（`yt-dlp`） | `pip install -e .` |
 | `local` | 本地离线中文 ASR（`sherpa-onnx`、`numpy`） | `pip install -e '.[local]'` |
-| `browser` | 浏览器登录导出 cookie、风控兜底（`playwright`、`browser-cookie3`） | `pip install -e '.[browser]'` |
+| `browser` | 浏览器登录导出 cookie、抖音风控兜底、微信视频号预览页渲染（`playwright`、`browser-cookie3`） | `pip install -e '.[browser]'` |
 | `all` | 以上全部 | `pip install -e '.[all]'` |
 | `dev` | 单元测试（`pytest`） | `pip install -e '.[dev]'` |
 
@@ -16,6 +16,10 @@
 brew install ffmpeg        # macOS；Ubuntu/Debian: sudo apt install ffmpeg
 python3 -m playwright install chromium   # 仅 browser 组需要
 ```
+
+微信视频号适配器 `scripts/wx_fetch.py` 用 `channel="chrome"` 启动**本机 Google Chrome**，
+因此除 Playwright 外还需安装 Chrome 浏览器本体；缺失时适配器返回
+`need_login` 状态并给出提示，不会抛 traceback。
 
 云端转写（siliconflow / openai 兼容接口）**不需要额外 Python 包**，只用标准库 `urllib`，
 但需要设置 API Key 环境变量。

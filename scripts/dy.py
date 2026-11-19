@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""一键流水线：抖音链接 -> Markdown 文稿。
+"""一键流水线：链接 -> Markdown 文稿。
 
 单条与批量两种模式（自动/显式）：
   单条:   python3 dy.py "https://v.douyin.com/xxxx/" -o ./notes
           python3 dy.py "分享文案..." -o ./notes --engine sherpa
   批量:   python3 dy.py --links-file urls.txt -o ./notes
-          # urls.txt 每行一个抖音链接或整段分享文案，逐条处理互不中断
+          # urls.txt 每行一个链接或整段分享文案，逐条处理互不中断
+
+按来源分流（详见 douyin2md/sources.py 与 docs/architecture.md）：
+  抖音        -> dy_fetch.py（元数据 + 音频）-> 转写 -> Markdown
+  微信视频号  -> wx_fetch.py（只读元数据 + 高清封面）-> Markdown（metadata-only 降级）
+  其它        -> unsupported_source，给出可解释提示，不再丢给 yt-dlp
 
 批量时先全部下载音频到一个目录，再统一交给转写脚本（本地模型只加载一次），
-避免每个视频重复加载模型。
+避免每个视频重复加载模型。降级条目没有音频，不参与转写，但照常产出文稿。
 
-内部依次调用 dy_fetch.py -> dy_transcribe.py -> dy_tomd.py，
-中间产物保存在 <输出目录>/.artifacts/。
+内部产物保存在 <输出目录>/.artifacts/。
 """
 
 import argparse
@@ -22,6 +26,24 @@ import shutil
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from douyin2md.sources import (  # noqa: E402
+    ALL_STATUSES,
+    DOUYIN,
+    STATUS_MEDIA_BLOCKED,
+    STATUS_METADATA_ONLY,
+    STATUS_NEED_LOGIN,
+    STATUS_OK,
+    STATUS_UNSUPPORTED,
+    WEIXIN_CHANNELS,
+    detect_source,
+    meta_id,
+    source_advice,
+    status_advice,
+)
 
 
 def run(cmd, desc, quiet=False) -> subprocess.CompletedProcess:
@@ -59,32 +81,59 @@ def extract_links(url_or_file, links_file) -> list:
     return links
 
 
+def classify(meta: dict, audio) -> str:
+    """把 meta 契约映射到批量清单的 5 个结果状态。"""
+    if meta.get("source") == WEIXIN_CHANNELS:
+        if meta.get("extraction_status") == "need_login":
+            return STATUS_NEED_LOGIN
+        if meta.get("playability") == "client_only":
+            return STATUS_MEDIA_BLOCKED
+        return STATUS_METADATA_ONLY
+    return STATUS_OK
+
+
 def fetch_one(url: str, work: Path, args, quiet: bool):
-    """下载单个视频的元数据+音频，返回 (meta, audio_path)。失败返回 None。"""
-    cmd = [sys.executable, str(HERE / "dy_fetch.py"), url, "-o", str(work)]
-    if args.cookies:
-        cmd += ["--cookies", args.cookies]
-    if args.cookies_from_browser:
-        cmd += ["--cookies-from-browser", args.cookies_from_browser]
+    """按来源获取单条内容，返回 (meta, audio_path, status)；失败时 meta 为 None。"""
+    source = detect_source(url)
+
+    if source == WEIXIN_CHANNELS:
+        cmd = [sys.executable, str(HERE / "wx_fetch.py"), url,
+               "-o", str(work), "--cover-dir", str(Path(args.output_dir).expanduser())]
+        label = "视频号只读元数据"
+    elif source == DOUYIN:
+        cmd = [sys.executable, str(HERE / "dy_fetch.py"), url, "-o", str(work)]
+        if args.cookies:
+            cmd += ["--cookies", args.cookies]
+        if args.cookies_from_browser:
+            cmd += ["--cookies-from-browser", args.cookies_from_browser]
+        label = "抖音元数据与音频"
+    else:
+        print(f"  ✗ [unsupported_source] {source_advice(source)}", file=sys.stderr)
+        return None, None, STATUS_UNSUPPORTED
+
     if quiet:
         cmd.append("-q")
-    p = run(cmd, f"解析: {url[:60]}", quiet)
+    p = run(cmd, f"{label}: {url[:60]}", quiet)
     if p.returncode != 0:
-        print(f"  ✗ 获取失败: {(p.stderr or p.stdout).strip()[-300:]}", file=sys.stderr)
-        return None
+        err = (p.stderr or p.stdout or "").strip()[-300:]
+        print(f"  ✗ 获取失败: {err}", file=sys.stderr)
+        status = STATUS_NEED_LOGIN if ("need_login" in err or "playwright" in err) else "failed"
+        return None, None, status
     try:
         meta = json.loads(p.stdout)
     except json.JSONDecodeError:
         print(f"  ✗ 解析元数据失败: {(p.stdout or '')[:200]}", file=sys.stderr)
-        return None
+        return None, None, "failed"
+
     audio = Path(meta.get("audio_path") or "").expanduser()
-    return meta, audio if audio.is_file() else None
+    audio = audio if audio.is_file() else None
+    return meta, audio, classify(meta, audio)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="抖音链接一键转 Markdown（单条/批量）")
-    ap.add_argument("url", nargs="?", help="抖音链接或含链接的分享文案（单条模式）")
-    ap.add_argument("--links-file", help="批量模式：每行一个抖音链接/分享文案的文件")
+    ap = argparse.ArgumentParser(description="链接一键转 Markdown（单条/批量，自动按来源分流）")
+    ap.add_argument("url", nargs="?", help="链接或含链接的分享文案（单条模式）")
+    ap.add_argument("--links-file", help="批量模式：每行一个链接/分享文案的文件")
     ap.add_argument("-o", "--output-dir", default="./notes", help="Markdown 输出目录")
     ap.add_argument("--cookies", help="Netscape cookie 文件路径")
     ap.add_argument("--cookies-from-browser", help="从浏览器读取 cookie: chrome/safari/edge")
@@ -110,19 +159,19 @@ def main() -> int:
     work = out_dir / ".artifacts"
     work.mkdir(parents=True, exist_ok=True)
 
-    # ---- 1) 逐条获取元数据与音频 ----
+    # ---- 1) 逐条获取元数据与音频（按来源分流，单条失败不中断批量） ----
     staging = work / "audio_batch"
     if batch:
         staging.mkdir(parents=True, exist_ok=True)
-    metas, audio_map, failed = [], {}, []
+    metas, audio_map, failed, status_map = [], {}, [], {}
     for i, link in enumerate(links, 1):
         print(f"\n[{i}/{len(links)}] 处理: {link[:70]}", file=sys.stderr)
-        got = fetch_one(link, work, args, args.quiet)
-        if not got:
+        meta, audio, status = fetch_one(link, work, args, args.quiet)
+        status_map[link] = status
+        if meta is None:
             failed.append(link)
             continue
-        meta, audio = got
-        vid = str(meta.get("aweme_id"))
+        vid = meta_id(meta)
         meta_path = work / f"{vid}.meta.json"
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                              encoding="utf-8")
@@ -134,6 +183,7 @@ def main() -> int:
 
     if not metas:
         print(f"\n[FAIL] 所有链接都获取失败（{len(failed)} 个）", file=sys.stderr)
+        _print_status_summary(status_map, args.quiet)
         return 1
 
     # ---- 2) 转写：批量时把音频集中到目录、只调一次转写脚本（模型只加载一次）；
@@ -162,7 +212,7 @@ def main() -> int:
     # ---- 3) 逐条生成 Markdown ----
     md_ok = 0
     for idx, meta in enumerate(metas, 1):
-        vid = str(meta.get("aweme_id"))
+        vid = meta_id(meta)
         meta_path = work / f"{vid}.meta.json"
         tr_path = tr_dir / f"{vid}.json"
         md_cmd = [sys.executable, str(HERE / "dy_tomd.py"),
@@ -199,9 +249,24 @@ def main() -> int:
         print(f"\n🎉 完成: Markdown {md_ok}/{len(metas)} 篇，输出到 {out_dir}",
               file=sys.stderr)
         if failed:
-            print(f"   失败 {len(failed)} 条（见上方日志），如需重试请单独处理。",
+            print(f"   未处理 {len(failed)} 条（见上方日志），如需重试请单独处理。",
                   file=sys.stderr)
+    _print_status_summary(status_map, args.quiet)
     return 0 if failed == [] and md_ok == len(metas) else 1
+
+
+def _print_status_summary(status_map: dict, quiet: bool) -> None:
+    """按状态分级输出清单，让降级与失败可区分。"""
+    if quiet or not status_map:
+        return
+    print("\n[状态清单]", file=sys.stderr)
+    for status in (*ALL_STATUSES, "failed"):
+        items = [link for link, st in status_map.items() if st == status]
+        if items:
+            label = status_advice(status) if status in ALL_STATUSES else "获取或解析失败"
+            print(f"   {status:<28} {len(items):>2} 条  {label}", file=sys.stderr)
+            for link in items:
+                print(f"      - {link[:70]}", file=sys.stderr)
 
 
 if __name__ == "__main__":

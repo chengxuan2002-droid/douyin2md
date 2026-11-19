@@ -23,6 +23,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from douyin2md.sources import (  # noqa: E402
+    DOUYIN, detect_source, extract_url, source_advice,
+)
+
 DEFAULT_COOKIES = Path.home() / ".douyin2md" / "cookies.txt"
 
 # 实测踩到的错误 -> 修复动作。这部分是本 skill 的核心价值。
@@ -47,13 +55,12 @@ def diagnose(stderr: str) -> str:
 
 
 def normalize_input(text: str) -> str:
-    """从一段分享文案里提取抖音链接。"""
+    """从一段分享文案里提取抖音链接（复用统一的 URL 归一化规则）。"""
     text = text.strip()
-    m = re.search(r"https?://[^\s\u4e00-\u9fff]+", text)
-    if not m:
-        raise ValueError(f"未在输入中找到链接: {text[:50]!r}")
-    url = m.group(0).rstrip(".,;)）】")
-    return url
+    try:
+        return extract_url(text)
+    except ValueError:
+        raise ValueError(f"未在输入中找到链接: {text[:50]!r}") from None
 
 
 def extract_aweme_id(url: str):
@@ -148,6 +155,13 @@ def main() -> int:
     except ValueError as e:
         print(f"[FAIL] {e}", file=sys.stderr)
         return 1
+
+    # 独立调用时提前给出可解释提示，不再把非抖音链接丢给 yt-dlp 换一句 Unsupported URL
+    source = detect_source(url)
+    if source != DOUYIN:
+        print(f"[unsupported_source] dy_fetch.py 仅处理抖音链接。{source_advice(source)}",
+              file=sys.stderr)
+        return 2
 
     out_dir = Path(args.output).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
