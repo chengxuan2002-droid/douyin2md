@@ -22,8 +22,10 @@
 | 各框架安装方式靠口头说明 | `docs/agent-compatibility.md` 逐框架给出目录与命令 |
 
 原始脚本 `scripts/*.py` 作为兼容层继续可单独调用，命令行参数与抖音产物格式保持兼容；
-新入口只做转发，历史笔记里的命令依然有效。本版为来源适配对其中 3 个脚本做了增量修改
-并新增 `wx_fetch.py`，详见 `CHANGELOG.md` 与 `docs/architecture.md`。
+新入口只做转发，历史笔记里的命令依然有效。本版对 3 个既有脚本（`dy.py` / `dy_fetch.py` /
+`dy_tomd.py`）做了增量修改，并新增 3 个适配器/诊断脚本（`wx_fetch.py` / `wx_ocr.py` /
+`wx_session_check.py`）；抖音产物与 `main` 分支逐字一致。详见 `CHANGELOG.md` 与
+`docs/architecture.md`。
 
 ## 快速开始
 
@@ -85,19 +87,29 @@ bash bin/douyin2md config                                                # 生�
 
 `url` / `batch` 先按来源分流：抖音走完整三段式；视频号走只读元数据 + 高清封面，产出
 `metadata_only` 文稿（自动声明缺失项，不臆造时间戳）；未知来源返回 `unsupported_source`。
-批量结束会输出状态清单。视频号需要逐字稿时，请在微信客户端保存视频或录屏后用同一份
-`meta.json` 合并转写结果：
+批量结束会输出状态清单。加 `--ocr` 可对视频号高清封面做本地文字识别（默认关闭，macOS 用
+系统 Vision，结果单列「封面文字（OCR，须人工核对）」，**不得当作口播或时间戳**）：
+
+```bash
+bash bin/douyin2md url "https://weixin.qq.com/sph/xxxx" -o ./notes --ocr
+```
+
+视频号需要逐字稿时，请在微信客户端保存视频或录屏后用同一份 `meta.json` 合并转写结果：
 
 ```bash
 bash bin/douyin2md transcribe ./视频.mp4 -o t.json
 bash bin/douyin2md to-md --meta ./notes/.artifacts/<id>.meta.json --transcript t.json -o ./notes
 ```
 
+`scripts/wx_session_check.py` 是可选的带会话字段差异验证工具，**默认不执行**：必须由用户
+提供 cookie 并显式加 `--authorize` 才会发出带会话请求，报告脱敏且不下载视频。
+
 详见 `SKILL.md` 的「非抖音来源」与 `docs/troubleshooting.md` 的视频号章节。
 
 常用参数：`--engine auto|sherpa|siliconflow|openai|local`、`--model`、`--language zh`、
-`--cookies`、`--cookies-from-browser`、`--no-timestamps`、`--keep-audio`、`-o`、`-q`。
-`--config <文件>` 可放在命令任意位置。完整说明见 `docs/configuration.md`。
+`--cookies`、`--cookies-from-browser`、`--no-timestamps`、`--keep-audio`、
+`--ocr` / `--ocr-backend auto|macos-vision|tesseract|none` / `--ocr-min-confidence 0.8`、
+`-o`、`-q`。`--config <文件>` 可放在命令任意位置。完整说明见 `docs/configuration.md`。
 
 ## 仓库结构
 
@@ -120,8 +132,10 @@ douyin2md/
 │   └── sources.py             # 来源判定 / 状态契约（唯一判定源，纯逻辑）
 ├── scripts/                   # 流水线脚本（兼容层，可单独调用）
 │   ├── dy.py                  # 链接 → Markdown（单条 + 批量，按来源分流）
-│   ├── dy_fetch.py            # 抖音元数据 + 音频
-│   ├── wx_fetch.py            # 视频号只读元数据 + 高清封面（新增）
+│   ├── dy_fetch.py            # 抖音元数据 + 音频（含短链解析与精确诊断）
+│   ├── wx_fetch.py            # 视频号只读元数据 + 高清封面 + 可选 OCR（新增）
+│   ├── wx_ocr.py              # 封面 OCR 适配器（macOS Vision / tesseract，新增）
+│   ├── wx_session_check.py    # 授权后的会话字段差异验证（默认不执行，新增）
 │   ├── dy_transcribe.py       # 语音转文字
 │   ├── dy_tomd.py             # 拼装 Markdown
 │   ├── dy_model.py            # 本地模型管理

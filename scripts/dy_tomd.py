@@ -173,6 +173,20 @@ def build(meta: dict, transcript: dict, with_ts: bool = True,
         out.append(desc)
         out.append("")
 
+    # P2-1：封面 OCR 只是画面文字证据，绝不写进转写正文或时间戳。
+    # 旧抖音 meta 没有 cover_ocr 字段，本节不会出现，产物保持逐字兼容。
+    ocr = meta.get("cover_ocr") or {}
+    ocr_lines = ocr.get("lines") or []
+    if ocr.get("available") and ocr_lines:
+        out.append("## 封面文字（OCR，须人工核对）")
+        out.append("")
+        out.append(f"> {ocr.get('note') or '机器识别结果，须人工核对。'}")
+        out.append("")
+        for line in ocr_lines:
+            mark = "  ⚠️ 低置信度" if line.get("low_confidence") else ""
+            out.append(f"- {line.get('text', '').strip()}{mark}")
+        out.append("")
+
     if text:
         out.append("## 转写正文")
         out.append("")

@@ -12,7 +12,9 @@ bin/douyin2md  ──►  douyin2md/cli.py  ──►  douyin2md/config.py
         │                    └──► douyin2md/sources.py
         │                           来源判定 / 状态契约（纯逻辑、不联网）
         ▼  subprocess（sys.executable + 绝对路径）
-scripts/*.py   原始实现（可单独调用）+ wx_fetch.py 来源适配器
+scripts/*.py   原始实现（可单独调用）
+               + wx_fetch.py（来源适配）/ wx_ocr.py（封面 OCR）
+               + wx_session_check.py（授权后的会话字段验证）
 ```
 
 - **接口层**（`douyin2md/`）：只做参数归并、配置读取、环境体检与来源判定，不含网络业务
@@ -54,9 +56,12 @@ dy.py
  └─ 3. dy_tomd.py         元数据 + 转写 → Markdown（frontmatter + 元信息表 + [mm:ss] 正文）
 ```
 
-批量模式（>1 个链接）先把音频集中到 `<输出目录>/.artifacts/audio_batch/`，
-再一次性调用 `dy_transcribe.py <目录>`，**本地模型只加载一次**；单条失败不中断整批，
-结束时给出成功/失败清单。中间产物在 `.artifacts/`，除非 `--keep-audio` 否则自动清理。
+**单条与批量都进入转写阶段**（2026-11-20 修复：旧版 `if audio and batch:` 使单条链接
+跳过转写，只产出元数据文稿）。批量模式（>1 个链接）先把音频集中到
+`<输出目录>/.artifacts/audio_batch/`，再一次性调用 `dy_transcribe.py <目录>`，
+**本地模型只加载一次**；单条模式直接对取回的音频调用 `dy_transcribe.py`，不复制暂存。
+单条失败不中断整批，结束时给出成功/失败清单。中间产物在 `.artifacts/`，
+除非 `--keep-audio` 否则自动清理。
 
 本地文件模式（`transcribe`）跳过抖音获取链路，**不需要 cookie**：
 `dy_transcribe.py` 递归扫描目录里的 `mp3/wav/m4a/flac/mp4/mov/mkv…`，
@@ -91,3 +96,9 @@ msToken + `a_bogus` 签名校验，静态 cookie 可能仍返回 403。`dy_brows
 - 降级是一等契约：`extraction_status=metadata_only` 由 `meta.json` 驱动，
   `dy_tomd.py` 自动输出缺失清单；旧抖音 meta 不新增任何字段，产物保持兼容。
 - 视频号适配器只读：不绕过鉴权、客户端校验或 DRM，不尝试构造播放地址。
+- 封面 OCR 是**可选证据**：`--ocr` 默认关闭，后端失败自动降级；`cover_ocr` 只用于
+  「封面文字（OCR，须人工核对）」区块，不进入转写正文、不生成时间戳。
+- 会话验证需显式授权：`wx_session_check.py` 未加 `--authorize` 不发任何带会话请求，
+  报告脱敏（不含 cookie 值、不记录动态凭证取值），且只比对字段差异。
+- 抖音短链先归一化：`dy_fetch.py::resolve_short_url()` 解析失败时回退原链接，
+  保证任何网络环境下不会比旧版更难用；精确诊断只改提示文案，不改下载参数。

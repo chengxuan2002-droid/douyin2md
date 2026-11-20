@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -32,16 +33,23 @@ from douyin2md.sources import (  # noqa: E402
 )
 
 DEFAULT_COOKIES = Path.home() / ".douyin2md" / "cookies.txt"
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 # 实测踩到的错误 -> 修复动作。这部分是本 skill 的核心价值。
 DIAGNOSIS = [
-    ("Fresh cookies", "抖音风控拦截。运行 `python3 dy_cookie.py` 登录并导出 cookie，"
-                      "再用 --cookies 指定，或 --cookies-from-browser chrome"),
+    ("Fresh cookies", "抖音 aweme/detail 被 Argus / a_bogus 风控拦截（不一定要求登录）。"
+                      "先刷新 cookie 重试；仍失败改用浏览器拦截兜底："
+                      "`bash bin/douyin2md capture \"<链接>\" -o ./notes`"),
     ("ArgusSecurity", "请求缺少风控签名。必须使用浏览器 cookie，裸 HTTP 已不可用"),
-    ("Sign not match|invalid signature|a_bogus", "签名参数失效，更新 yt-dlp: pip3 install -U yt-dlp"),
+    ("Sign not match|invalid signature|a_bogus", "签名参数失效：更新 yt-dlp，或改用 `capture` 浏览器拦截兜底"),
+    ("SSL: UNEXPECTED_EOF|SSL_ERROR_SYSCALL|Connection reset by peer|Unable to download webpage",
+     "TLS/代理层失败，常见于短链跳转目标 www.iesdouyin.com 不可达。"
+     "本工具会先把短链解析为 www.douyin.com/video/<id> 再重试；若仍失败请检查代理，或用 `capture` 兜底"),
     ("Unable to download JSON|Failed to download web detail", "接口返回异常，多为 cookie 过期，请重新导出 cookie"),
     ("Video unavailable|视频不存在|已删除", "视频已被作者删除或设为私密，无法获取"),
-    ("Unsupported URL", "链接格式不支持。支持 v.douyin.com 短链、www.douyin.com/video/<id>、含链接的分享文案"),
+    ("Unsupported URL|\\[generic\\]", "链接未能被 DouyinIE 识别（多为短链跳转失败）。"
+                                     "检查短链解析结果，或直接用 www.douyin.com/video/<id> 长链"),
     ("HTTP Error 403", "被限流。等待一段时间，或换用登录态 cookie"),
     ("network|timed out|Connection", "网络问题。检查网络/代理后重试"),
 ]
@@ -71,6 +79,34 @@ def extract_aweme_id(url: str):
     if m:
         return m.group(1)
     return None
+
+
+def resolve_short_url(url: str, timeout: int = 15) -> str:
+    """短链 -> ``www.douyin.com/video/<id>``，失败则原样返回。
+
+    2026-11-19 真实联网回归发现：yt-dlp 对 ``v.douyin.com/<code>`` 会先访问
+    302 目标 ``www.iesdouyin.com/share/...``，该域名在部分网络/代理环境下 TLS
+    握手直接失败，退化成 ``[generic]`` 且诊断含糊。这里只读 Location 头部，
+    提取 aweme_id 后换成 DouyinIE 能直接识别的长链；任何异常都不改变旧行为。
+    """
+    if (urlsplit(url).hostname or "").lower() != "v.douyin.com":
+        return url
+    try:
+        proc = subprocess.run(
+            ["curl", "-sS", "-D", "-", "-o", "/dev/null", "--max-redirs", "0",
+             "--max-time", str(timeout), "-A", UA, url],
+            capture_output=True, text=True, timeout=timeout + 5,
+        )
+        loc = ""
+        for line in (proc.stdout or "").splitlines():
+            if line.lower().startswith("location:"):
+                loc = line.split(":", 1)[1].strip()
+        m = re.search(r"/video/(\d+)", loc)
+        if m:
+            return f"https://www.douyin.com/video/{m.group(1)}/"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return url
 
 
 def build_cmd(url: str, out_dir: Path, cookies, from_browser, audio: bool, quiet: bool) -> list:
@@ -165,6 +201,11 @@ def main() -> int:
 
     out_dir = Path(args.output).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved = resolve_short_url(url)
+    if resolved != url and not args.quiet:
+        print(f"[0/2] 短链解析: {url} -> {resolved}", file=sys.stderr)
+    url = resolved
 
     aweme_id = extract_aweme_id(url)
     cmd = build_cmd(url, out_dir, args.cookies, args.cookies_from_browser,

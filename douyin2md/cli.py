@@ -65,6 +65,11 @@ def _pipeline_parent() -> argparse.ArgumentParser:
     p.add_argument("--no-timestamps", action="store_true", default=None)
     p.add_argument("--no-frontmatter", action="store_true", default=None)
     p.add_argument("--keep-audio", action="store_true", default=None)
+    p.add_argument("--ocr", action="store_true", default=None,
+                   help="视频号高清封面做本地 OCR（可选，结果须人工核对）")
+    p.add_argument("--ocr-backend", default=None,
+                   choices=["auto", "macos-vision", "tesseract", "none"])
+    p.add_argument("--ocr-min-confidence", type=float, default=None)
     p.add_argument("-q", "--quiet", action="store_true")
     return p
 
@@ -88,6 +93,18 @@ def _pipeline_args(ns, cfg) -> list[str]:
     ):
         if pick(getattr(ns, attr, None), key, cfg):
             args.append(flag)
+    # 对新键用 cfg.get 兜底：旧配置字典/调用方自建 cfg 可能没有 OCR 字段
+    ocr_on = getattr(ns, "ocr", None)
+    if ocr_on is None:
+        ocr_on = cfg.get("ocr", False)
+    if ocr_on:
+        args.append("--ocr")
+        backend = getattr(ns, "ocr_backend", None)
+        _opt(args, "--ocr-backend",
+             backend if backend is not None else cfg.get("ocr_backend", "auto"))
+        conf = getattr(ns, "ocr_min_confidence", None)
+        _opt(args, "--ocr-min-confidence",
+             conf if conf is not None else cfg.get("ocr_min_confidence", 0.8))
     if getattr(ns, "quiet", False):
         args.append("-q")
     return args

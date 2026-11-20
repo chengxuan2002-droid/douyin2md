@@ -99,6 +99,12 @@ def fetch_one(url: str, work: Path, args, quiet: bool):
     if source == WEIXIN_CHANNELS:
         cmd = [sys.executable, str(HERE / "wx_fetch.py"), url,
                "-o", str(work), "--cover-dir", str(Path(args.output_dir).expanduser())]
+        if getattr(args, "ocr", False):
+            cmd.append("--ocr")
+            if getattr(args, "ocr_backend", None):
+                cmd += ["--ocr-backend", args.ocr_backend]
+            if getattr(args, "ocr_min_confidence", None) is not None:
+                cmd += ["--ocr-min-confidence", str(args.ocr_min_confidence)]
         label = "视频号只读元数据"
     elif source == DOUYIN:
         cmd = [sys.executable, str(HERE / "dy_fetch.py"), url, "-o", str(work)]
@@ -147,6 +153,10 @@ def main() -> int:
     ap.add_argument("--no-timestamps", action="store_true")
     ap.add_argument("--no-frontmatter", action="store_true")
     ap.add_argument("--keep-audio", action="store_true", help="保留音频文件")
+    ap.add_argument("--ocr", action="store_true", help="视频号高清封面做本地 OCR（可选）")
+    ap.add_argument("--ocr-backend", default="auto",
+                    choices=["auto", "macos-vision", "tesseract", "none"])
+    ap.add_argument("--ocr-min-confidence", type=float, default=0.8)
     ap.add_argument("-q", "--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -176,10 +186,13 @@ def main() -> int:
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                              encoding="utf-8")
         metas.append(meta)
-        if audio and batch:
-            # 集中到一个目录，便于后续批量转写时只加载一次模型
-            shutil.copy2(audio, staging / f"{vid}.mp3")
+        if audio:
+            # 单条模式也要登记音频，否则不会进入转写阶段（历史缺陷：
+            # 旧代码写成 `if audio and batch`，单条链接只产元数据文稿）。
             audio_map[vid] = str(audio)
+            if batch:
+                # 集中到一个目录，便于后续批量转写时只加载一次模型
+                shutil.copy2(audio, staging / f"{vid}.mp3")
 
     if not metas:
         print(f"\n[FAIL] 所有链接都获取失败（{len(failed)} 个）", file=sys.stderr)

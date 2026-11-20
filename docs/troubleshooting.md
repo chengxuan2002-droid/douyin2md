@@ -20,6 +20,10 @@
 | 批量个别失败 | 单条被限流/视频删除 | 不中断整批，结束后对失败条单独重试 |
 | cookie 有效但仍 403 / detail 空 | 已升级 msToken + `a_bogus` 签名校验 | 改用 `bash bin/douyin2md capture "<链接>"` |
 | `Unsupported URL`（非抖音链接） | 链接来源未被识别，旧版会原样丢给 yt-dlp | 新版按来源分流：视频号走元数据降级，未知来源返回 `unsupported_source` 并提示本地文件改用 `transcribe` |
+| 短链报 generic/TLS 错误、诊断显示「未知错误」 | `v.douyin.com` 短链未解析就交给 yt-dlp，跳转目标 `www.iesdouyin.com` 在部分网络下 TLS 不可达 | 新版 `resolve_short_url()` 先解析成 `www.douyin.com/video/<id>` 长链；解析失败自动回退原始链接，不改变既有行为 |
+| `Fresh cookies (not necessarily logged in) are needed` | 抖音 `aweme/detail` 的 Argus / `a_bogus` 签名风控，**不必然要求登录** | 诊断已给出精确建议：先刷新 cookie，仍失败改用 `bash bin/douyin2md capture "<链接>"`；实测 3 份 cookie + Chrome cookie + 新鲜游客 cookie 直连均不通过 |
+| 单条抖音链接只有元数据、没有转写正文 | 旧版 `if audio and batch:` 使单条模式跳过转写阶段 | 已修复：单条与批量都进入 `dy_transcribe.py`；批量仍复用音频暂存目录，模型只加载一次 |
+| 封面 OCR 结果把「大模型」识别成「大棋型」 | 艺术字/竖排文字的机器识别误差 | 结果已标「⚠️ 低置信度」并附「须人工核对」；**不得写入转写正文或当作视频内时间点** |
 | 拿到元数据但没有任何视频流字段 | 微信视频号预览页的平台侧策略，不是抓取失败 | 见下节；不要补抖音 cookie、不要跑 `capture`、不要反复重试 |
 | `ModuleNotFoundError: No module named 'playwright'` | 用错 Python 解释器 | 见下节 |
 
@@ -54,6 +58,19 @@
 | 封面分辨率只有 540×720 | `coverUrl` 末尾 `wxampicformat=503&picformat=200` 是缩图参数，去掉后 1080×1440 |
 | 互动数看起来对不上 | 页面图标顺序与接口字段命名有歧义（实测 `favCountFmt=253 / forwardCountFmt=1331 / likeCountFmt=223 / commentCountFmt=25`，页面依次显示 253/1331/223/25），按接口**原始字段名**映射，不做二次推断 |
 
+### 封面 OCR 与会话验证（2026-11-20 补做）
+
+- `--ocr` 对高清封面做本地识别，macOS 走系统 Vision、其它平台可选 `tesseract`，
+  都不需要新增 Python 包。实测 1080×1440 封面识别到 3 行文字，其中「破解大棋型幻觉」
+  被正确标为低置信度（正确应为「大模型」）——**机器结果必须人工核对，不得写入转写正文
+  或当作视频内时间点**；后端缺失时 `cover_ocr.available=false`，文稿照常产出。
+- `scripts/wx_session_check.py` 仅在用户提供 cookie + `--authorize` 时执行；未授权即
+  退出（rc=2）、不联网。报告脱敏（不含 cookie 值、不记录动态 `dynamicExportId` 取值）。
+  一次带非微信 cookie 的连通性验证显示：带会话前后 `feedInfo` 键集无变化、
+  `new_stream_fields=[]`，页面扫码提示与客户端版本门槛不受影响；报告已明确标注
+  **该次验证不能用于判定「登录态是否解锁播放」假设**，需要用户提供真实微信会话才能定论。
+- 该工具只做字段差异比对，不下载视频、不构造播放地址、不绕过鉴权或客户端校验。
+
 需要逐字稿时，只能由用户在微信客户端保存视频或录屏，提供本地文件后走
 `transcribe` → `to-md`；传入非空转写后模板自动升级为完整文稿。
 `capture` 只针对抖音 `aweme/detail` 的 msToken + `a_bogus`，对视频号不适用。
@@ -64,6 +81,11 @@
 - **短链解析**：解析 `v.douyin.com` 短链时某些代理会 MITM，需要临时绕过代理：
   `env -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy curl -sI <短链> | grep -i location`；
   而 `www.douyin.com` 主体需要走默认代理才有网，无头 Chrome 不要加 `--proxy-server=direct://`。
+  2026-11-19 实测：`www.iesdouyin.com` 在本机 TLS 握手失败，短链原样交给 yt-dlp 会落到
+  generic 提取器报 TLS 错误。现由 `dy_fetch.py::resolve_short_url()` 先还原为
+  `www.douyin.com/video/<id>` 再下载，失败自动回退；若随后报
+  `Fresh cookies (not necessarily logged in) are needed`，说明已进入 Argus / `a_bogus`
+  风控，改用 `capture` 兜底（该路径实测可取到真实 mp4 与 `aweme/detail`）。
 - **解释器不一致**：`dy_browser_capture.py` 需要 playwright，`dy_transcribe.py` 需要
   sherpa-onnx，历史上两者可能不在同一个解释器里。脚本会自动探测并打印
   `[env] 自动切换到 …`；全自动找不到时手动

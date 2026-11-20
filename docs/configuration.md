@@ -6,7 +6,8 @@
 | --- | --- | --- |
 | `core` | 抖音链接解析、元数据与音频获取（`yt-dlp`） | `pip install -e .` |
 | `local` | 本地离线中文 ASR（`sherpa-onnx`、`numpy`） | `pip install -e '.[local]'` |
-| `browser` | 浏览器登录导出 cookie、抖音风控兜底、微信视频号预览页渲染（`playwright`、`browser-cookie3`） | `pip install -e '.[browser]'` |
+| `browser` | 浏览器登录导出 cookie、抖音风控兜底、微信视频号预览页渲染、会话字段验证（`playwright`、`browser-cookie3`） | `pip install -e '.[browser]'` |
+| 封面 OCR | 系统级后端（macOS Vision 用 `swift`；或 `brew install tesseract`），**无新增 pip 依赖** | 缺失时自动降级 |
 | `all` | 以上全部 | `pip install -e '.[all]'` |
 | `dev` | 单元测试（`pytest`） | `pip install -e '.[dev]'` |
 
@@ -64,8 +65,21 @@ bash bin/douyin2md doctor --json           # 机器可读的环境体检
 | `keep_audio` | `DOUYIN2MD_KEEP_AUDIO` | `false` | 保留中间音频 |
 | `no_timestamps` | `DOUYIN2MD_NO_TIMESTAMPS` | `false` | 正文不带时间戳 |
 | `no_frontmatter` | `DOUYIN2MD_NO_FRONTMATTER` | `false` | 不写 YAML frontmatter |
+| `ocr` | `DOUYIN2MD_OCR` | `false` | 视频号高清封面做本地 OCR（仅 `url` / `batch` 有效） |
+| `ocr_backend` | — | `auto` | `auto` / `macos-vision` / `tesseract` / `none` |
+| `ocr_min_confidence` | — | `0.8` | 低于该置信度的 OCR 行标记「⚠️ 低置信度」 |
 
-布尔环境变量接受 `1/true/yes/on`（不区分大小写）。
+布尔环境变量接受 `1/true/yes/on`（不区分大小写）；`ocr_backend` 与 `ocr_min_confidence`
+也可通过命令行 `--ocr-backend` / `--ocr-min-confidence` 覆盖。
+
+封面 OCR 不引入新的 Python 依赖：macOS 走系统 Vision（临时编译 Swift 小工具，需 `swift`），
+其它平台可选系统命令 `tesseract`（`brew install tesseract`）。两者都缺失时返回
+`available=false`，文稿照常产出 `metadata_only` 版本，不会报错中断。
+**OCR 文字须人工核对，不得当作口播内容、字幕或视频内时间戳。**
+
+`scripts/wx_session_check.py` 与上述配置无关，是独立的可选验证工具：必须由用户提供
+Netscape cookie 并显式加 `--authorize` 才会发出带会话请求，未授权时直接退出（rc=2）、
+不联网；报告已脱敏，不写入任何 cookie 值，也不下载视频。
 
 ## 密钥
 

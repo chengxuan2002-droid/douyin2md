@@ -13,28 +13,55 @@
   `get_feed_info` 响应 → 压缩为统一 `meta.json` 契约（`extraction_status` / `playability` /
   `missing` / `evidence`）→ 下载去缩图参数的高清封面。**不尝试下载视频流**。
 - `doctor --json` 增加 `supported_sources`；`url` 增加来源即时提示。
-- 新增 4 个测试文件、共 50 个用例：来源判定、URL 归一化、适配器契约、空 `feedInfo`
-  对抗式检查、模板降级与抖音产物回归、批量状态机。
+- 新增 6 个测试文件、累计 81 个用例：来源判定、URL 归一化、适配器契约、空 `feedInfo`
+  对抗式检查、模板降级与抖音产物回归、批量状态机、封面 OCR 契约、会话验证授权前置。
 
 ### 变更
 
 - `scripts/dy.py`：按来源分流；新增状态机与结束时的分级状态清单；用 `meta_id()`
-  统一中间文件命名，避免非抖音条目出现 `None`。原有转写与清理逻辑**保持不变**。
+  统一中间文件命名，避免非抖音条目出现 `None`。转写与清理流程保持原样，仅修复
+  「单条模式跳过转写」的分支条件（见补做段）。
 - `scripts/dy_tomd.py`：`source` 驱动 `type` 与 ID 标签；`metadata_only` 时自动输出
   「摘要说明（请先读）」与缺失清单，且不伪造转写正文/时间戳；传入非空转写后自动升级为
   完整文稿。**旧抖音 meta 的产物逐字不变**（不新增任何 frontmatter 字段）。
 - `scripts/dy_fetch.py`：`normalize_input()` 复用统一归一化，修复分享文案尾随中文标点
   （如 `）。`）被吞进 URL；非抖音链接独立调用时给出可解释提示而非 `Unsupported URL`。
-- `SKILL.md` / `README.md` / `docs/architecture.md` / `docs/troubleshooting.md`：
+- `SKILL.md` / `README.md` / `CHANGELOG.md` / `docs/architecture.md` /
+  `docs/troubleshooting.md` / `docs/configuration.md` / `config.example.json`：
   同步来源适配层、视频号踩坑（含裸 HTTP 直连接口返回 `permission verification failed`
-  的实测证据）与降级话术。
+  的实测证据）、降级话术与新增的 OCR 配置项。
+- `douyin2md/cli.py` / `douyin2md/config.py`：`--ocr` 系列参数透传与配置注入，
+  对缺少新键的旧配置字典保持兼容。
+
+### 补做（2026-11-20，同一分支内继续）
+
+- **P2-1 封面 OCR**：新增 `scripts/wx_ocr.py`（`auto` / `macos-vision` / `tesseract` / `none`
+  四种后端，带置信度与低置信度标记，任何后端失败均降级为 `available=false`）。
+  `wx_fetch.py` 加 `--ocr` / `--ocr-backend` / `--ocr-min-confidence`，结果写入
+  `meta.json` 的 `cover_ocr`；`dy_tomd.py` 单列「封面文字（OCR，须人工核对）」，并明确
+  **不得作为口播、字幕或视频内时间戳依据**。配置模板与 `DOUYIN2MD_OCR` 同步。
+- **P2-2 会话验证**：新增 `scripts/wx_session_check.py`。未加 `--authorize` 时直接拒绝
+  （rc=2）且不联网；授权后只比对带会话前后的接口字段差异，输出脱敏报告（不写 cookie 值、
+  不下载视频）。实测结论：带会话后仍未出现视频流字段；用非微信 cookie 完成的仅是链路
+  连通性验证，报告明确标注不能用于判定登录态假设。
+- **修复单条链接不转写**：`dy.py` 中 `if audio and batch:` 使单条模式跳过转写阶段，
+  已改为单条与批量都进入 `dy_transcribe.py`；批量仍复用音频暂存目录，模型只加载一次。
+- **抖音短链解析与诊断**：`dy_fetch.py` 新增 `resolve_short_url()`，先把 `v.douyin.com`
+  短链还原成 `www.douyin.com/video/<id>` 长链（解析失败自动回退原链接）；`Fresh cookies`
+  的泛化「未知错误」提示改为 Argus / `a_bogus` 精确诊断并指向 `capture` 兜底。
+- **真实联网回归（2026-11-19）**：给定抖音样本直连 yt-dlp 仍被风控拦截（属平台/网络限制，
+  非本版缺陷）；改用 `dy_browser_capture.py` 取得真实 23MB / 6:18 视频与 `aweme/detail`，
+  完成 `sherpa` 转写（2156 字 / 19 段）→ Markdown 全链路。测试累计 81 个用例全部通过。
 
 ### 已知边界
 
 - 视频号预览页由平台限制，产物恒为 `metadata_only`；逐字稿需用户提供微信客户端保存的
   视频/录屏，再走 `transcribe` → `to-md`。
+- 抖音直连路径受 `aweme/detail` Argus / `a_bogus` 风控影响，静态 cookie 不保证成功；
+  文档已明确把 `capture` 列为兜底路径，不承诺一键直连成功率。
 - 2.0.0 段落中「`scripts/*.py` 逐字节保持不变」描述的是该版本当时的状态，
-  **不适用于本版**；本版对 3 个脚本做了增量修改，但保持参数与产物兼容。
+  **不适用于本版**；本版对 3 个既有脚本做了增量修改并新增 3 个脚本，
+  命令行参数与抖音产物格式保持兼容。
 
 ## 2.0.0 (2026-11-15)
 

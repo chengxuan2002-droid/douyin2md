@@ -144,6 +144,36 @@ class MainTest(unittest.TestCase):
         self.assertIn("unsupported_source", err)
         self.assertEqual(out.strip(), "")
 
+    def test_ocr_disabled_by_default(self):
+        rc, out, _ = self._run_main(["wx_fetch.py", SHORT, "-o", "/tmp/wxtest"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("cover_ocr", json.loads(out))
+
+    def test_ocr_opt_in_adds_contract_and_evidence(self):
+        fake = {"available": True, "backend": "macos-vision", "text": "华为如何用",
+                "lines": [{"text": "华为如何用", "confidence": 1.0, "low_confidence": False}],
+                "low_confidence": [], "note": "须人工核对"}
+        with mock.patch.object(wx, "ocr_image", return_value=fake) as m:
+            rc, out, err = self._run_main(
+                ["wx_fetch.py", SHORT, "-o", "/tmp/wxtest", "--ocr"])
+        self.assertEqual(rc, 0)
+        meta = json.loads(out)
+        self.assertEqual(meta["cover_ocr"]["backend"], "macos-vision")
+        self.assertTrue(any("封面本地 OCR" in e for e in meta["evidence"]))
+        self.assertIn("封面 OCR", err)
+        m.assert_called_once()
+
+    def test_ocr_unavailable_does_not_break_metadata(self):
+        fake = {"available": False, "backend": None, "reason": "未安装 tesseract",
+                "text": "", "lines": [], "low_confidence": [], "note": "须人工核对"}
+        with mock.patch.object(wx, "ocr_image", return_value=fake):
+            rc, out, _ = self._run_main(
+                ["wx_fetch.py", SHORT, "-o", "/tmp/wxtest", "--ocr"])
+        self.assertEqual(rc, 0)
+        meta = json.loads(out)
+        self.assertFalse(meta["cover_ocr"]["available"])
+        self.assertEqual(meta["extraction_status"], "metadata_only")
+
 
 if __name__ == "__main__":
     unittest.main()

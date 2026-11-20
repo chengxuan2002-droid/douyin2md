@@ -35,10 +35,13 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+for p in (str(ROOT), str(HERE)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
+from wx_ocr import NOTE as OCR_NOTE, ocr_image  # noqa: E402
 from douyin2md.sources import (  # noqa: E402
     EXTRACTION_METADATA_ONLY,
     EXTRACTION_NEED_LOGIN,
@@ -245,6 +248,12 @@ def main() -> int:
     ap.add_argument("--cover-dir", default=None, help="封面输出目录（默认同 --output）")
     ap.add_argument("--timeout", type=int, default=45, help="浏览器超时秒数")
     ap.add_argument("--no-cover", action="store_true", help="不下载封面")
+    ap.add_argument("--ocr", action="store_true",
+                    help="对高清封面做本地 OCR（可选；结果须人工核对，不冒充转写）")
+    ap.add_argument("--ocr-backend", default="auto",
+                    choices=["auto", "macos-vision", "tesseract", "none"])
+    ap.add_argument("--ocr-min-confidence", type=float, default=0.8,
+                    help="低于该置信度的 OCR 行标记为低置信度")
     ap.add_argument("-q", "--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -276,17 +285,35 @@ def main() -> int:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 2
 
+    cover_local = None
     if not args.no_cover:
         cover_dir = Path(args.cover_dir or args.output).expanduser()
         cover_path = cover_dir / f"{meta['source_id']}_封面.jpg"
         if download_cover(meta["cover_url"], cover_path):
             meta["cover_local"] = str(cover_path)
+            cover_local = cover_path
             if not args.quiet:
                 print(f"[2/2] 高清封面: {cover_path}", file=sys.stderr)
         else:
             meta["evidence"].append("高清封面下载失败，仅保留封面 URL")
             if not args.quiet:
                 print("[2/2] 封面下载失败，仅保留 URL", file=sys.stderr)
+
+    if args.ocr:
+        result = ocr_image(cover_local, args.ocr_backend, args.ocr_min_confidence)
+        meta["cover_ocr"] = result
+        if result["available"]:
+            meta["evidence"].append(
+                f"高清封面本地 OCR（{result['backend']}）识别到 {len(result['lines'])} 行文字，"
+                f"其中 {len(result['low_confidence'])} 行低置信度；{OCR_NOTE}")
+            if not args.quiet:
+                print(f"[P2] 封面 OCR: {len(result['lines'])} 行"
+                      f"（{len(result['low_confidence'])} 行低置信度，须人工核对）",
+                      file=sys.stderr)
+        else:
+            meta["evidence"].append(f"封面 OCR 不可用：{result['reason']}")
+            if not args.quiet:
+                print(f"[P2] 封面 OCR 不可用：{result['reason']}", file=sys.stderr)
 
     json.dump(meta, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")

@@ -103,6 +103,65 @@ class FetchOneTest(unittest.TestCase):
         self.assertEqual(got[2], "failed")
 
 
+class SingleModeTranscribeTest(unittest.TestCase):
+    """回归：旧代码 `if audio and batch:` 让单条抖音链接跳过转写。"""
+
+    def _run_pipeline(self, links, use_links_file=False):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            audio = out / "sample.mp3"
+            audio.write_bytes(b"fake-audio")
+            metas = [{"aweme_id": str(7653 + i), "title": "测试", "author": "某作者",
+                      "audio_path": str(audio)} for i in range(len(links))]
+            calls = []
+
+            def fake_fetch(link, work, args, quiet):
+                return metas[links.index(link)], audio, dy.STATUS_OK
+
+            def fake_run(cmd, desc, quiet=False):
+                calls.append(list(cmd))
+                return completed()
+
+            if use_links_file:
+                lf = out / "urls.txt"
+                lf.write_text("\n".join(links) + "\n", encoding="utf-8")
+                link_args = ["--links-file", str(lf)]
+            else:
+                link_args = [links[0]]
+            argv = ["dy.py", *link_args, "-o", str(out)]
+            if use_links_file:
+                argv.append("--keep-audio")   # 保留暂存目录以便断言
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(dy, "fetch_one", side_effect=fake_fetch), \
+                 mock.patch.object(dy, "run", side_effect=fake_run), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = dy.main()
+            tr = [c for c in calls if any("dy_transcribe.py" in str(p) for p in c)]
+            md = [c for c in calls if any("dy_tomd.py" in str(p) for p in c)]
+            staging = list((out / ".artifacts" / "audio_batch").glob("*.mp3"))
+            return rc, tr, md, staging, audio
+
+    def test_single_link_runs_transcribe(self):
+        rc, tr, md, staging, audio = self._run_pipeline([DOUYIN])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(tr), 1, "单条模式必须调用 dy_transcribe.py")
+        self.assertIn(str(audio), tr[0])
+        self.assertTrue(tr[0][tr[0].index("-o") + 1].endswith("7653.json"))
+        self.assertEqual(len(md), 1)
+        self.assertEqual(staging, [], "单条模式不应复制到批量暂存目录")
+
+    def test_batch_still_uses_staging_and_single_transcribe_call(self):
+        second = "https://v.douyin.com/def456/"
+        rc, tr, md, staging, audio = self._run_pipeline(
+            [DOUYIN, second], use_links_file=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(tr), 1, "批量模式模型只加载一次")
+        self.assertTrue(any("audio_batch" in str(p) for p in tr[0]))
+        self.assertEqual(len(staging), 2)
+        self.assertEqual(len(md), 2)
+
+
 class SummaryAndLinksTest(unittest.TestCase):
     def test_status_summary_groups(self):
         err = io.StringIO()
@@ -150,6 +209,36 @@ class NormalizeInputTest(unittest.TestCase):
         self.assertIn("-x", cmd)
         self.assertIn("--audio-format", cmd)
         self.assertEqual(cmd[-1], DOUYIN)
+
+    def test_short_url_resolved_to_douyin_long_url(self):
+        fake = completed(stdout="HTTP/2 302\r\n"
+                                "location: https://www.iesdouyin.com/share/video/7707996226502888740/?x=1\r\n")
+        with mock.patch.object(dyfetch.subprocess, "run", return_value=fake):
+            got = dyfetch.resolve_short_url("https://v.douyin.com/lCU-HSvIPdA/")
+        self.assertEqual(got, "https://www.douyin.com/video/7707996226502888740/")
+
+    def test_short_url_falls_back_to_original_on_failure(self):
+        with mock.patch.object(dyfetch.subprocess, "run", side_effect=OSError("no curl")):
+            got = dyfetch.resolve_short_url(DOUYIN)
+        self.assertEqual(got, DOUYIN)
+
+    def test_long_url_bypasses_resolution(self):
+        long = "https://www.douyin.com/video/7653/"
+        with mock.patch.object(dyfetch.subprocess, "run") as run:
+            got = dyfetch.resolve_short_url(long)
+        run.assert_not_called()
+        self.assertEqual(got, long)
+
+    def test_tls_error_has_actionable_diagnosis(self):
+        advice = dyfetch.diagnose("[generic] Unable to download webpage: "
+                                  "[SSL: UNEXPECTED_EOF_WHILE_READING]")
+        self.assertIn("TLS", advice)
+        self.assertIn("capture", advice)
+
+    def test_fresh_cookies_diagnosis_mentions_argus_and_capture(self):
+        advice = dyfetch.diagnose("ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed")
+        self.assertIn("a_bogus", advice)
+        self.assertIn("capture", advice)
 
 
 if __name__ == "__main__":

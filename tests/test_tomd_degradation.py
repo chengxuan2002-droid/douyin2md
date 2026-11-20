@@ -104,6 +104,39 @@ class DegradationTest(unittest.TestCase):
         self.assertNotIn("`None`", md)
         self.assertNotIn('aweme_id: "None"', md)
 
+    def test_cover_ocr_section_is_evidence_not_transcript(self):
+        meta = dict(WX_META)
+        meta["cover_ocr"] = {
+            "available": True, "backend": "macos-vision",
+            "text": "华为如何用\n破解大棋型幻觉",
+            "lines": [
+                {"text": "华为如何用", "confidence": 1.0, "low_confidence": False},
+                {"text": "破解大棋型幻觉", "confidence": 0.5, "low_confidence": True},
+            ],
+            "low_confidence": ["破解大棋型幻觉"],
+            "note": "封面文字为 OCR 机器识别结果，须人工核对；不得作为视频口播内容或时间戳依据。",
+        }
+        md = tomd.build(meta, None)
+        self.assertIn("## 封面文字（OCR，须人工核对）", md)
+        self.assertIn("- 华为如何用", md)
+        self.assertIn("- 破解大棋型幻觉  ⚠️ 低置信度", md)
+        self.assertIn("不得作为视频口播内容", md)
+        # OCR 只是画面文字证据，绝不变成转写正文或时间戳
+        self.assertNotIn("## 转写正文", md)
+        self.assertNotIn("**[", md)
+        self.assertNotIn("asr_engine", md)
+
+    def test_unavailable_ocr_adds_no_section(self):
+        meta = dict(WX_META)
+        meta["cover_ocr"] = {"available": False, "reason": "未安装 tesseract",
+                             "lines": [], "text": "", "note": "须人工核对"}
+        md = tomd.build(meta, None)
+        self.assertNotIn("## 封面文字", md)
+
+    def test_old_douyin_meta_has_no_ocr_section(self):
+        md = tomd.build(OLD_META, TRANSCRIPT)
+        self.assertNotIn("## 封面文字", md)
+
 
 if __name__ == "__main__":
     unittest.main()
