@@ -112,6 +112,10 @@ def fetch_one(url: str, work: Path, args, quiet: bool):
             cmd += ["--cookies", args.cookies]
         if args.cookies_from_browser:
             cmd += ["--cookies-from-browser", args.cookies_from_browser]
+        if getattr(args, "no_capture_fallback", False):
+            cmd.append("--no-capture-fallback")
+        if getattr(args, "force_capture", False):
+            cmd.append("--force-capture")
         label = "抖音元数据与音频"
     else:
         print(f"  ✗ [unsupported_source] {source_advice(source)}", file=sys.stderr)
@@ -130,6 +134,10 @@ def fetch_one(url: str, work: Path, args, quiet: bool):
     except json.JSONDecodeError:
         print(f"  ✗ 解析元数据失败: {(p.stdout or '')[:200]}", file=sys.stderr)
         return None, None, "failed"
+
+    if meta.get("capture_fallback") and not quiet:
+        print("  ℹ 抖音直连受风控拦截，已自动由浏览器拦截兜底取得真实媒体",
+              file=sys.stderr)
 
     audio = Path(meta.get("audio_path") or "").expanduser()
     audio = audio if audio.is_file() else None
@@ -157,6 +165,10 @@ def main() -> int:
     ap.add_argument("--ocr-backend", default="auto",
                     choices=["auto", "macos-vision", "tesseract", "none"])
     ap.add_argument("--ocr-min-confidence", type=float, default=0.8)
+    ap.add_argument("--no-capture-fallback", action="store_true",
+                    help="禁用抖音直连失败时的浏览器拦截自动兜底")
+    ap.add_argument("--force-capture", action="store_true",
+                    help="抖音跳过 yt-dlp，直接用浏览器拦截（已知直连被风控时用）")
     ap.add_argument("-q", "--quiet", action="store_true")
     args = ap.parse_args()
 

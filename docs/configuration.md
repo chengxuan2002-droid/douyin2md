@@ -68,9 +68,18 @@ bash bin/douyin2md doctor --json           # 机器可读的环境体检
 | `ocr` | `DOUYIN2MD_OCR` | `false` | 视频号高清封面做本地 OCR（仅 `url` / `batch` 有效） |
 | `ocr_backend` | — | `auto` | `auto` / `macos-vision` / `tesseract` / `none` |
 | `ocr_min_confidence` | — | `0.8` | 低于该置信度的 OCR 行标记「⚠️ 低置信度」 |
+| `no_capture_fallback` | `DOUYIN2MD_NO_CAPTURE_FALLBACK` | `false` | 禁用抖音直连失败时的浏览器拦截自动兜底 |
+| `force_capture` | `DOUYIN2MD_FORCE_CAPTURE` | `false` | 抖音跳过 yt-dlp，直接用浏览器拦截 |
 
 布尔环境变量接受 `1/true/yes/on`（不区分大小写）；`ocr_backend` 与 `ocr_min_confidence`
-也可通过命令行 `--ocr-backend` / `--ocr-min-confidence` 覆盖。
+也可通过命令行 `--ocr-backend` / `--ocr-min-confidence` 覆盖。`no_capture_fallback` /
+`force_capture` 对应命令行 `--no-capture-fallback` / `--force-capture`，对缺少新键的
+旧配置字典保持兼容（按默认关闭处理）。
+
+**抖音自动兜底的运行条件**：`playwright` + 本机 Google Chrome（`channel="chrome"`），
+与视频号适配器相同；`--fresh` 模式使用临时创建、用完即删的空 profile，不读写
+`~/.douyin2md/cap-profile`。缺失 Chrome 时兜底失败并给出可解释错误，不会抛 traceback；
+此时可用 `--no-capture-fallback` 退回纯 yt-dlp 行为。
 
 封面 OCR 不引入新的 Python 依赖：macOS 走系统 Vision（临时编译 Swift 小工具，需 `swift`），
 其它平台可选系统命令 `tesseract`（`brew install tesseract`）。两者都缺失时返回

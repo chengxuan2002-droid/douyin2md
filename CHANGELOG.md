@@ -13,8 +13,9 @@
   `get_feed_info` 响应 → 压缩为统一 `meta.json` 契约（`extraction_status` / `playability` /
   `missing` / `evidence`）→ 下载去缩图参数的高清封面。**不尝试下载视频流**。
 - `doctor --json` 增加 `supported_sources`；`url` 增加来源即时提示。
-- 新增 6 个测试文件、累计 81 个用例：来源判定、URL 归一化、适配器契约、空 `feedInfo`
-  对抗式检查、模板降级与抖音产物回归、批量状态机、封面 OCR 契约、会话验证授权前置。
+- 新增 7 个测试文件、累计 116 个用例：来源判定、URL 归一化、适配器契约、空 `feedInfo`
+  对抗式检查、模板降级与抖音产物回归、批量状态机、封面 OCR 契约、会话验证授权前置、
+  抖音风控自动兜底的字段契约/会话策略/分支与参数透传。
 
 ### 变更
 
@@ -51,16 +52,39 @@
   的泛化「未知错误」提示改为 Argus / `a_bogus` 精确诊断并指向 `capture` 兜底。
 - **真实联网回归（2026-11-19）**：给定抖音样本直连 yt-dlp 仍被风控拦截（属平台/网络限制，
   非本版缺陷）；改用 `dy_browser_capture.py` 取得真实 23MB / 6:18 视频与 `aweme/detail`，
-  完成 `sherpa` 转写（2156 字 / 19 段）→ Markdown 全链路。测试累计 81 个用例全部通过。
+  完成 `sherpa` 转写（2156 字 / 19 段）→ Markdown 全链路；当时的 81 个用例全部通过
+  （后续补做与本轮兜底测试累计增至 116 个）。
+
+### 一键链路（2026-11-20 发布前收尾）
+
+- **抖音 `url` 直连失败自动兜底**：`dy_fetch.py` 新增 `slim_from_detail()` 与
+  `capture_fallback()`，把浏览器拦截的 `aweme/detail` 映射成与 yt-dlp **完全相同**的
+  `meta.json` 契约（含 `audio_path` 指向 mp4），下游 `transcribe` → `to-md` 零改动。
+  新增 `--no-capture-fallback` / `--force-capture`；`--no-audio` 透传 `--no-download`。
+  `dy.py` 在兜底成功时输出一行说明，`cli.py` / `config.py` / `config.example.json`
+  全链路透传两个开关（兼容缺新键的旧配置字典）。
+- **全新游客会话避开验证码**：`dy_browser_capture.py` 新增 `--fresh` / `--profile-dir` /
+  `--no-download`，未捕获 detail 时返回 rc=3 并打印 `[risk]` 诊断。实测复用旧 profile
+  + 1028 条登录 cookie 会命中「验证码中间页」，而全新空 profile 游客态稳定取得
+  `aweme/detail`；自动兜底默认先 fresh，失败再用常规会话互补重试一次，显式 cookie 时
+  优先尊重登录态。`capture` 子命令同步暴露 `--fresh`。
+- **真实样本一键验收**：`bash bin/douyin2md url "<分享文案>" -o <目录>`（默认参数，
+  两次连续执行）均 rc=0，自动走兜底 → sherpa 转写 2156 字 / 19 段 →
+  7355 字节带时间戳文稿，状态 `ok`；`meta.json` 带 `capture_fallback: true`。
+  旧抖音 meta 与 `main` 分支产物重验仍逐字一致（含/不含转写两种）。
+- 文档同步 `SKILL.md` / `README.md` / `docs/architecture.md` /
+  `docs/configuration.md` / `docs/troubleshooting.md`。
 
 ### 已知边界
 
 - 视频号预览页由平台限制，产物恒为 `metadata_only`；逐字稿需用户提供微信客户端保存的
   视频/录屏，再走 `transcribe` → `to-md`。
-- 抖音直连路径受 `aweme/detail` Argus / `a_bogus` 风控影响，静态 cookie 不保证成功；
-  文档已明确把 `capture` 列为兜底路径，不承诺一键直连成功率。
+- 抖音**直连** yt-dlp 仍受 `aweme/detail` Argus / `a_bogus` 风控影响，静态 cookie 不保证
+  成功；但 `url` 会自动切浏览器拦截兜底，故**承诺的是一键链路成功率，不是直连成功率**。
+  兜底依赖本机 `playwright` + Chrome；遇验证码中间页会换会话重试一次，仍失败则如实报
+  平台限制，不破解验证码、不伪造签名、不高并发重试。
 - 2.0.0 段落中「`scripts/*.py` 逐字节保持不变」描述的是该版本当时的状态，
-  **不适用于本版**；本版对 3 个既有脚本做了增量修改并新增 3 个脚本，
+  **不适用于本版**；本版对 4 个既有脚本做了增量修改并新增 3 个脚本，
   命令行参数与抖音产物格式保持兼容。
 
 ## 2.0.0 (2026-11-15)

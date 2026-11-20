@@ -70,6 +70,10 @@ def _pipeline_parent() -> argparse.ArgumentParser:
     p.add_argument("--ocr-backend", default=None,
                    choices=["auto", "macos-vision", "tesseract", "none"])
     p.add_argument("--ocr-min-confidence", type=float, default=None)
+    p.add_argument("--no-capture-fallback", action="store_true", default=None,
+                   help="禁用抖音直连失败时自动切换浏览器拦截兜底")
+    p.add_argument("--force-capture", action="store_true", default=None,
+                   help="抖音跳过 yt-dlp 直连，直接用浏览器拦截 aweme/detail")
     p.add_argument("-q", "--quiet", action="store_true")
     return p
 
@@ -105,6 +109,13 @@ def _pipeline_args(ns, cfg) -> list[str]:
         conf = getattr(ns, "ocr_min_confidence", None)
         _opt(args, "--ocr-min-confidence",
              conf if conf is not None else cfg.get("ocr_min_confidence", 0.8))
+    # 抖音获取路径开关；用 cfg.get 兼容不含新键的旧配置字典
+    for flag, key, attr in (
+        ("--no-capture-fallback", "no_capture_fallback", "no_capture_fallback"),
+        ("--force-capture", "force_capture", "force_capture"),
+    ):
+        if getattr(ns, attr, None) or cfg.get(key, False):
+            args.append(flag)
     if getattr(ns, "quiet", False):
         args.append("-q")
     return args
@@ -158,7 +169,11 @@ def cmd_tomd(ns, cfg) -> int:
 def cmd_capture(ns, cfg) -> int:
     args = ["dy_browser_capture.py", ns.url, "-o", str(ns.out or (Path(cfg["home"]).expanduser() / "capture"))]
     _opt(args, "--name", ns.name)
-    _opt(args, "--cookies", ns.cookies or cfg["cookies"])
+    if getattr(ns, "fresh", False):
+        args.append("--fresh")
+    else:
+        _opt(args, "--cookies", ns.cookies or cfg["cookies"])
+        _opt(args, "--profile-dir", getattr(ns, "profile_dir", None))
     return _exec(args)
 
 
@@ -291,6 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--out", default=None)
     p.add_argument("--name", default=None)
     p.add_argument("--cookies", default=None)
+    p.add_argument("--fresh", action="store_true",
+                   help="全新游客会话（避开被风控标记的旧 profile/登录 cookie）")
+    p.add_argument("--profile-dir", default=None, help="覆盖 Chrome 持久化 profile 目录")
     p.set_defaults(func=cmd_capture)
 
     p = sub.add_parser("model", help="本地 ASR 模型管理: list/status/download/path")

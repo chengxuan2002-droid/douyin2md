@@ -1,6 +1,6 @@
 ---
 name: douyin2md
-description: 把抖音视频或本地音视频转成 Markdown 文稿。用户发抖音链接（v.douyin.com 短链、www.douyin.com/video/<id>、或含链接的分享文案）要求"转文字/提取文案/整理成笔记/存成 md/生成逐字稿/总结一下"时使用；一次发多个链接或整个列表/收藏夹要求"批量/全部转成 md"时也使用；发本地音视频文件或目录要求转录时同样适用。自动区分单条与批量，无需用户选择脚本。支持元数据提取、语音转写（本地离线或云端）、带时间戳正文、YAML frontmatter。发微信视频号链接（weixin.qq.com/sph/...）时自动按来源降级为元数据+高清封面摘要，并明确标注缺失项。
+description: 把抖音视频或本地音视频转成 Markdown 文稿。用户发抖音链接（v.douyin.com 短链、www.douyin.com/video/<id>、或含链接的分享文案）要求"转文字/提取文案/整理成笔记/存成 md/生成逐字稿/总结一下"时使用；一次发多个链接或整个列表/收藏夹要求"批量/全部转成 md"时也使用；发本地音视频文件或目录要求转录时同样适用。自动区分单条与批量，无需用户选择脚本。支持元数据提取、语音转写（本地离线或云端）、带时间戳正文、YAML frontmatter。发微信视频号链接（weixin.qq.com/sph/...）时自动按来源降级为元数据+高清封面摘要，并明确标注缺失项。抖音直连被风控拦截时自动切换浏览器拦截兜底，仍产出完整逐字稿。
 license: MIT
 ---
 
@@ -27,11 +27,11 @@ douyin2md --help                   # pip install -e . 之后的等价命令
 
 | 子命令 | 作用 |
 | --- | --- |
-| `url <链接或文案>` | 单个链接 → Markdown（自动按来源分流：抖音全链路 / 视频号元数据降级） |
+| `url <链接或文案>` | 单个链接 → Markdown（自动按来源分流：抖音全链路含风控自动兜底 / 视频号元数据降级） |
 | `batch <links.txt>` | 批量链接，每条一篇 Markdown，单条失败不中断，结束输出状态清单 |
 | `transcribe <文件/目录>` | 本地音视频 → 转写 JSON（无需 cookie） |
 | `to-md --meta <json>` | 元数据 + 转写 JSON → Markdown |
-| `capture <链接>` | 风控兜底：浏览器拦截 detail 响应并下载 mp4 |
+| `capture <链接> [--fresh]` | 手动风控兜底：浏览器拦截 detail 响应并下载 mp4（`--fresh` 用全新游客会话） |
 | `model <list\|status\|download\|path>` | 本地 ASR 模型管理 |
 | `cookie [--check]` | 浏览器登录导出 cookie |
 | `doctor` | 只读环境体检（不联网、不安装） |
@@ -48,7 +48,7 @@ douyin2md --help                   # pip install -e . 之后的等价命令
 | 多个链接 / 列表 / 收藏夹 / "全部" | 逐行写入临时文件，再 `bash bin/douyin2md batch urls.txt -o ./notes` |
 | 1 个本地音视频文件 | `bash bin/douyin2md transcribe ./录音.mp4 -o 录音.json` |
 | 本地一个目录 / 一批文件 | `bash bin/douyin2md transcribe ./访谈集/ -o ./访谈转录/`（模型只加载一次） |
-| 主路径 403 / detail 返回空 | `bash bin/douyin2md capture "<链接>" -o ./.artifacts` |
+| 抖音直连被风控（`Fresh cookies` / Argus） | **无需手动干预**：`url` 自动切浏览器拦截兜底；仅在要单独取 mp4 时才用 `capture "<链接>" -o ./.artifacts --fresh` |
 
 判断不清时按「能直接跑的最小范围」执行，完成后补问是否需要处理更多。
 批量输出自动带 `序号-作者-标题.md` 前缀，避免同名覆盖；批量逐条串行，不要高并发以免限流。
@@ -101,6 +101,39 @@ bash bin/douyin2md cookie --check         # 校验 cookie 是否仍有效
 **专名核实（必须做）**：口播里的英文/品牌专名易错，三级校验依次是
 ① 换一档模型重跑交叉校验 → ② `ffmpeg` 抽帧读画面字幕定案 → ③ 查项目官网/仓库核对拼写。
 两个模型一致也可能都错，不能据此下结论。抽帧看片头标题、结构切换处、结尾念产品名处。
+
+## 抖音直连风控：自动兜底（2026-11-20 实测）
+
+抖音 `aweme/detail` 的 Argus / `a_bogus` 签名风控会让 yt-dlp 直连稳定报
+`Fresh cookies (not necessarily logged in) are needed`；短链跳转目标
+`www.iesdouyin.com` 在部分网络下还会 TLS 不可达。**`url` / `batch` 会自动处理，不要让用户自己选脚本**：
+
+1. `dy_fetch.py` 先把 `v.douyin.com` 短链只读解析成 `www.douyin.com/video/<id>` 长链；
+2. 直连仍失败时自动调用 `dy_browser_capture.py`，由真实浏览器渲染页面并拦截
+   `aweme/detail` 响应，取得元数据与 mp4；
+3. 把 detail 映射成与 yt-dlp **完全相同**的 `meta.json` 契约，照常进入
+   `transcribe` → `to-md`，最终产出带时间戳的完整逐字稿。
+
+兜底默认使用**全新空 Chrome profile 的游客态**（`--fresh`）。2026-11-20 对照实测：
+复用旧 profile + 1028 条登录 cookie 会命中「验证码中间页」，而全新游客会话稳定拿到
+`aweme/detail`；用户显式传 `--cookies` 时优先尊重其登录态，失败再回退 fresh。
+兜底成功时日志会出现「已自动由浏览器拦截兜底取得真实媒体」，`meta.json` 带
+`capture_fallback: true` 与 `extractor: browser-capture (aweme/detail)`，
+**文稿格式与直连成功时逐字一致**，不新增任何区块。
+
+| 开关 | 用途 |
+| --- | --- |
+| （默认） | 直连失败自动兜底；视频号与未知来源不受影响 |
+| `--no-capture-fallback` | 禁用自动兜底，保留旧行为（只报诊断并失败） |
+| `--force-capture` | 已知直连必失败时跳过 yt-dlp，直接用浏览器拦截，省一次请求 |
+| `--no-audio` | 兜底时只取元数据（透传 `--no-download`，不下载 mp4） |
+
+对应配置 `no_capture_fallback` / `force_capture` 与环境变量
+`DOUYIN2MD_NO_CAPTURE_FALLBACK` / `DOUYIN2MD_FORCE_CAPTURE`。
+单独取 mp4 用 `bash bin/douyin2md capture "<链接>" -o ./.artifacts --fresh`。
+
+遇到验证码中间页时脚本会明确打印 `[risk]` 诊断并自动换会话重试一次，
+**不破解验证码、不伪造签名、不绕过鉴权**；若两次都失败，如实报平台限制，不要反复高并发重试。
 
 ## 非抖音来源：微信视频号（只读降级）
 

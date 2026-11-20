@@ -7,7 +7,7 @@
 
 | 报错 / 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| `Fresh cookies (not necessarily logged in) are needed` | cookie 缺失或过期 | `bash bin/douyin2md cookie`，或 `--cookies-from-browser chrome` |
+| `Fresh cookies (not necessarily logged in) are needed` | cookie 缺失或过期；现多由 `aweme/detail` 签名风控触发 | 新版 `url` 会自动切浏览器拦截兜底，无需手工处理；确需刷新 cookie 用 `bash bin/douyin2md cookie` |
 | `Blocked by ArgusSecurityPlugin` | 裸 HTTP 请求被风控 | 必须用浏览器 cookie，不要自己写 requests 请求 detail 接口 |
 | `未安装 sherpa-onnx` | 缺本地中文引擎 | `pip install -e '.[local]'` |
 | `模型 'xxx' 尚未下载` | 模型未下载 | `bash bin/douyin2md model download` |
@@ -18,28 +18,43 @@
 | VAD 未生效 | `silero_vad.onnx` 与当前 sherpa 版本不匹配 | 自动退化为固定 20 秒切片，转写正常，仅时间戳粒度变粗 |
 | 换 `paraformer-zh-int8` 后转写 0 字 | `model download` 顺带下的 VAD 与 paraformer 不兼容 | 把 `silero_vad.onnx` 改名成 `*.incompatible`，退化为固定分段 |
 | 批量个别失败 | 单条被限流/视频删除 | 不中断整批，结束后对失败条单独重试 |
-| cookie 有效但仍 403 / detail 空 | 已升级 msToken + `a_bogus` 签名校验 | 改用 `bash bin/douyin2md capture "<链接>"` |
+| cookie 有效但仍 403 / detail 空 | 已升级 msToken + `a_bogus` 签名校验 | `url` 已自动兜底；只需单独取 mp4 时用 `bash bin/douyin2md capture "<链接>" --fresh` |
 | `Unsupported URL`（非抖音链接） | 链接来源未被识别，旧版会原样丢给 yt-dlp | 新版按来源分流：视频号走元数据降级，未知来源返回 `unsupported_source` 并提示本地文件改用 `transcribe` |
 | 短链报 generic/TLS 错误、诊断显示「未知错误」 | `v.douyin.com` 短链未解析就交给 yt-dlp，跳转目标 `www.iesdouyin.com` 在部分网络下 TLS 不可达 | 新版 `resolve_short_url()` 先解析成 `www.douyin.com/video/<id>` 长链；解析失败自动回退原始链接，不改变既有行为 |
-| `Fresh cookies (not necessarily logged in) are needed` | 抖音 `aweme/detail` 的 Argus / `a_bogus` 签名风控，**不必然要求登录** | 诊断已给出精确建议：先刷新 cookie，仍失败改用 `bash bin/douyin2md capture "<链接>"`；实测 3 份 cookie + Chrome cookie + 新鲜游客 cookie 直连均不通过 |
+| `Fresh cookies (not necessarily logged in) are needed` | 抖音 `aweme/detail` 的 Argus / `a_bogus` 签名风控，**不必然要求登录** | 实测 3 份 cookie + Chrome cookie + 新鲜游客 cookie 直连均不通过；新版 `url` 自动切浏览器拦截兜底并照常产出逐字稿，`--force-capture` 可跳过这次必然失败的直连 |
+| 浏览器页面标题变成「验证码中间页」、`[risk] 未取得 aweme/detail` | 复用旧 Chrome profile + 大量登录 cookie 被风控标记 | 兜底默认用 `--fresh` 全新空 profile 游客态（实测稳定拿到 detail）；失败再自动用常规会话互补一次。手动 `capture` 加 `--fresh`；仍失败则等风控解除，不高并发重试、不破解验证码 |
+| 兜底失败提示「浏览器拦截未启动」/ `need_login` | 缺 `playwright` 或本机 Google Chrome | 装 `pip install -e '.[browser]'` + Chrome；不需要时加 `--no-capture-fallback` 退回纯 yt-dlp 行为 |
 | 单条抖音链接只有元数据、没有转写正文 | 旧版 `if audio and batch:` 使单条模式跳过转写阶段 | 已修复：单条与批量都进入 `dy_transcribe.py`；批量仍复用音频暂存目录，模型只加载一次 |
 | 封面 OCR 结果把「大模型」识别成「大棋型」 | 艺术字/竖排文字的机器识别误差 | 结果已标「⚠️ 低置信度」并附「须人工核对」；**不得写入转写正文或当作视频内时间点** |
 | 拿到元数据但没有任何视频流字段 | 微信视频号预览页的平台侧策略，不是抓取失败 | 见下节；不要补抖音 cookie、不要跑 `capture`、不要反复重试 |
 | `ModuleNotFoundError: No module named 'playwright'` | 用错 Python 解释器 | 见下节 |
 
-## 风控升级：为什么需要 capture
+## 风控升级：从手动 capture 到自动兜底
 
 抖音 detail 接口新增 msToken（由页面风控 JS 注入）与 `a_bogus` 签名校验。
 静态 cookie 文件里没有 msToken，因此即使登录态有效，yt-dlp 也可能 403。
 `dy_browser_capture.py` 的做法：
 
-1. 读 `~/.douyin2md/cookies_merged.txt`（由 `dy_cookie_merge_msToken.py` 生成）；
-2. Playwright `channel="chrome"` 无头打开视频页，拦截 `aweme/v1/web/aweme/detail` 响应拿 JSON；
-3. `ffmpeg -headers "Referer: https://www.douyin.com/"` 拉 `play_addr` 存 mp4；
-4. 交给 `dy_transcribe.py` 转写。
+1. Playwright `channel="chrome"` 无头打开视频页，拦截 `aweme/v1/web/aweme/detail` 响应拿 JSON；
+2. `ffmpeg -headers "Referer: https://www.douyin.com/"` 拉 `play_addr` 存 mp4；
+3. 交给 `dy_transcribe.py` 转写。
 
 产出 `<out>/<aweme_id>.detail.json`（desc / 作者 / create_time / duration / statistics）
-与 `<out>/<name>.mp4`。元数据可直接取用，不必绕 `dy_tomd.py` 模板。
+与 `<out>/<name>.mp4`。元数据可直接取用。
+
+**2026-11-20 起这一步已自动化**：`dy_fetch.py` 直连失败时调用 `capture_fallback()`，
+把 detail 映射成与 yt-dlp 完全相同的 `meta.json`（`slim_from_detail()`），
+`audio_path` 指向 mp4，下游转写与文稿生成零改动。默认参数下
+`bash bin/douyin2md url "<分享文案>" -o ./notes` 一次跑通：
+样本取得 23MB / 6:18 真实视频 → sherpa 2156 字 / 19 段 → 7355 字节带时间戳文稿，
+`meta.json` 带 `capture_fallback: true`，状态 `ok`。
+
+**会话策略（对照实测）**：复用 `~/.douyin2md/cap-profile` + 1028 条登录 cookie 时
+页面标题变成「验证码中间页」、拿不到 detail；改用全新空 profile 的游客态
+（`--fresh`）则稳定捕获 5 次 `aweme/detail` 与 `play_addr`。自动兜底默认先 fresh，
+失败再用常规会话互补重试一次；显式传 `--cookies` 时优先尊重登录态。
+`--no-download` 支持只取元数据不下载 mp4（`--no-audio` 透传）。
+脚本遇验证码会打印 `[risk]` 诊断，**只换会话重试一次，不破解验证码、不伪造签名**。
 
 ## 微信视频号预览页：为什么拿不到视频流（2026-11-19 实测）
 

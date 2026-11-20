@@ -21,10 +21,12 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parent.parent
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -175,6 +177,130 @@ def slim(info: dict, url: str) -> dict:
     }
 
 
+def slim_from_detail(detail: dict, url: str, audio_path) -> dict:
+    """把浏览器拦截的 ``aweme/detail`` 转成与 ``slim()`` 完全一致的字段契约。
+
+    2026-11-20 真实联网回归：yt-dlp 直连被 Argus / a_bogus 拦住，而浏览器渲染
+    页面时 ``aweme/detail`` 会正常下发。这里只做字段映射，不改动下游任何逻辑；
+    额外的 ``capture_fallback`` 标记用于让文稿/日志能区分两条获取路径。
+    """
+    aweme = detail.get("aweme_detail") or detail.get("awemeDetail") or {}
+    if not aweme:
+        return {}
+    statistics = aweme.get("statistics") or {}
+    author = aweme.get("author") or {}
+    video = aweme.get("video") or {}
+    desc = (aweme.get("desc") or "").strip()
+
+    duration_ms = video.get("duration") or 0
+    duration = round(duration_ms / 1000) if duration_ms else None
+    create_time = aweme.get("create_time") or 0
+    try:
+        upload_date = datetime.fromtimestamp(create_time).strftime("%Y%m%d") if create_time else None
+    except (OSError, OverflowError, ValueError):
+        upload_date = None
+
+    tags = [t.get("hashtag_name") for t in (aweme.get("text_extra") or [])
+            if t.get("hashtag_name")]
+    thumbnail = ((video.get("cover") or {}).get("url_list") or [None])[0]
+    vid = aweme.get("aweme_id")
+
+    return {
+        "aweme_id": vid,
+        "title": (desc.split("\n")[0][:60] if desc else None) or vid or "抖音视频",
+        "desc": desc,
+        "author": author.get("nickname"),
+        "author_id": author.get("uid"),
+        "author_url": None,          # aweme/detail 不提供主页 URL；保持契约字段齐全
+        "duration_sec": duration,
+        "duration_text": (f"{duration // 60:02d}:{duration % 60:02d}" if duration else None),
+        "upload_date": upload_date,
+        "timestamp": create_time or None,
+        "view_count": statistics.get("play_count"),
+        "like_count": statistics.get("digg_count"),
+        "comment_count": statistics.get("comment_count"),
+        "repost_count": statistics.get("share_count"),
+        "save_count": statistics.get("collect_count"),
+        "thumbnail": thumbnail,
+        "tags": tags,
+        "webpage_url": url,
+        "extractor": "browser-capture (aweme/detail)",
+        "capture_fallback": True,
+        "audio_path": str(audio_path) if audio_path else None,
+    }
+
+
+def capture_fallback(url: str, out_dir: Path, cookies, want_audio: bool,
+                     timeout: int = 240):
+    """yt-dlp 失败时的浏览器拦截兜底，返回 ``(meta, error)``。
+
+    产物落在 ``<out_dir>/capture/``：``<aweme_id>.detail.json`` 与 ``<aweme_id>.mp4``。
+    mp4 直接作为 ``audio_path``（dy_transcribe.py 用 ffmpeg 按内容解码，支持 mp4）。
+    ``want_audio=False`` 时传 ``--no-download``，只取元数据不消耗带宽。
+
+    2026-11-20 实测：复用 ``~/.douyin2md/cap-profile`` + 1028 条登录 cookie 会命中
+    「验证码中间页」，而全新空 profile 的游客态稳定拿到 ``aweme/detail``。因此
+    无人值守默认先走 ``--fresh``，失败再用常规会话互补重试一次；用户显式给了
+    cookie 时优先尊重其登录态，再回退 fresh。
+    """
+    cap_dir = out_dir / "capture"
+    cap_dir.mkdir(parents=True, exist_ok=True)
+    attempts = ([(False, cookies), (True, None)] if cookies
+                else [(True, None), (False, None)])
+
+    last_err = ""
+    for idx, (fresh, ck) in enumerate(attempts, 1):
+        cmd = [sys.executable, str(HERE / "dy_browser_capture.py"), url,
+               "-o", str(cap_dir)]
+        if fresh:
+            cmd.append("--fresh")
+        elif ck:
+            cmd += ["--cookies", str(ck)]
+        if not want_audio:
+            cmd.append("--no-download")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.SubprocessError) as exc:
+            last_err = f"浏览器拦截未启动: {exc}"
+            continue
+        # 把浏览器侧关键诊断透出来，避免失败时只剩一句「未捕获」
+        for line in (proc.stdout or "").splitlines():
+            if "[risk]" in line or "页面标题" in line or "加载 " in line:
+                print(f"  [capture {idx}] {line.strip()}", file=sys.stderr)
+        if proc.returncode != 0:
+            last_err = (proc.stderr or proc.stdout or "").strip()[-300:]
+            continue
+
+        details = sorted(cap_dir.glob("*.detail.json"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+        if not details:
+            last_err = "浏览器未捕获 aweme/detail 响应"
+            continue
+        try:
+            detail = json.loads(details[0].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            last_err = f"detail.json 无法解析: {exc}"
+            continue
+        meta = slim_from_detail(detail, url, None)
+        if not meta:
+            last_err = "aweme/detail 内容为空"
+            continue
+        if want_audio:
+            mp4 = cap_dir / f"{meta['aweme_id']}.mp4"
+            if not (mp4.is_file() and mp4.stat().st_size > 1000):
+                last_err = "已取得元数据但未下载到可转写的媒体文件"
+                continue
+            meta["audio_path"] = str(mp4)
+        return meta, ""
+    return None, last_err
+
+
+def _emit(meta: dict) -> int:
+    json.dump(meta, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="获取抖音视频元数据与音频")
     ap.add_argument("url", help="抖音链接或含链接的分享文案")
@@ -184,6 +310,10 @@ def main() -> int:
     ap.add_argument("--no-audio", action="store_true", help="只取元数据，不下载音频")
     ap.add_argument("-q", "--quiet", action="store_true")
     ap.add_argument("--raw", action="store_true", help="输出 yt-dlp 原始 JSON 而非精简结构")
+    ap.add_argument("--no-capture-fallback", action="store_true",
+                    help="禁用直连失败时的浏览器拦截自动兜底（保持旧行为）")
+    ap.add_argument("--force-capture", action="store_true",
+                    help="跳过 yt-dlp，直接用浏览器拦截 aweme/detail（已知直连必失败时用）")
     args = ap.parse_args()
 
     try:
@@ -207,6 +337,20 @@ def main() -> int:
         print(f"[0/2] 短链解析: {url} -> {resolved}", file=sys.stderr)
     url = resolved
 
+    # 已知直连必被风控拦截时，跳过 yt-dlp 那次徒劳请求，直接走浏览器拦截。
+    if args.force_capture:
+        if not args.quiet:
+            print("[1/2] --force-capture: 浏览器拦截 aweme/detail（跳过 yt-dlp）",
+                  file=sys.stderr)
+        meta, cap_err = capture_fallback(url, out_dir, args.cookies,
+                                         want_audio=not args.no_audio)
+        if not meta:
+            print(f"[FAIL] 浏览器拦截兜底失败: {cap_err}", file=sys.stderr)
+            return 1
+        if not args.quiet:
+            print("[2/2] 已取得真实媒体与元数据（browser-capture）", file=sys.stderr)
+        return _emit(meta)
+
     aweme_id = extract_aweme_id(url)
     cmd = build_cmd(url, out_dir, args.cookies, args.cookies_from_browser,
                     audio=not args.no_audio, quiet=args.quiet)
@@ -219,12 +363,32 @@ def main() -> int:
         err = (proc.stderr or "") + (proc.stdout or "")
         print(f"[FAIL] 获取失败\n{err.strip()[:800]}", file=sys.stderr)
         print(f"\n💡 诊断建议: {diagnose(err)}", file=sys.stderr)
-        return 1
+        if args.no_capture_fallback:
+            return 1
+        if not args.quiet:
+            print("\n[2/2] 自动切换浏览器拦截兜底（aweme/detail）...", file=sys.stderr)
+        meta, cap_err = capture_fallback(url, out_dir, args.cookies,
+                                         want_audio=not args.no_audio)
+        if not meta:
+            print(f"[FAIL] 浏览器拦截兜底也失败: {cap_err}", file=sys.stderr)
+            return 1
+        if args.raw and not args.quiet:
+            print("[提示] 兜底路径输出统一契约，--raw 不适用", file=sys.stderr)
+        return _emit(meta)
 
     info = pick_meta(out_dir, aweme_id)
     if not info:
         print("[FAIL] 未找到 yt-dlp 输出的 info.json", file=sys.stderr)
-        return 1
+        if args.no_capture_fallback:
+            return 1
+        if not args.quiet:
+            print("\n[2/2] 自动切换浏览器拦截兜底...", file=sys.stderr)
+        meta, cap_err = capture_fallback(url, out_dir, args.cookies,
+                                         want_audio=not args.no_audio)
+        if not meta:
+            print(f"[FAIL] 浏览器拦截兜底也失败: {cap_err}", file=sys.stderr)
+            return 1
+        return _emit(meta)
 
     vid = info.get("id") or aweme_id
     audio_path = out_dir / str(vid) / f"{vid}.mp3" if not args.no_audio else None
@@ -232,9 +396,7 @@ def main() -> int:
     if not args.raw:
         result["audio_path"] = str(audio_path) if audio_path and audio_path.exists() else None
 
-    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
-    sys.stdout.write("\n")
-    return 0
+    return _emit(result)
 
 
 if __name__ == "__main__":

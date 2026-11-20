@@ -4,7 +4,8 @@
 元信息表 + 视频描述文案 + 带时间戳的口播转写正文。
 
 微信视频号链接会自动按来源降级：预览页不下发视频流，只取元数据与高清封面，产出明确
-标注缺失项的 `metadata_only` 文稿（不臆造转写或时间戳）。
+标注缺失项的 `metadata_only` 文稿（不臆造转写或时间戳）。抖音直连若被 Argus / `a_bogus`
+风控拦截，`url` 会自动切换浏览器拦截兜底，仍产出完整逐字稿，无需手动换脚本。
 
 这既是一个**标准 Agent Skill**，也是一个普通 Python 项目。任何支持 Agent Skills 的框架
 （Claude Code、Codex、WorkBuddy、Cursor、Gemini CLI、GitHub Copilot CLI、OpenCode、goose…）
@@ -22,10 +23,10 @@
 | 各框架安装方式靠口头说明 | `docs/agent-compatibility.md` 逐框架给出目录与命令 |
 
 原始脚本 `scripts/*.py` 作为兼容层继续可单独调用，命令行参数与抖音产物格式保持兼容；
-新入口只做转发，历史笔记里的命令依然有效。本版对 3 个既有脚本（`dy.py` / `dy_fetch.py` /
-`dy_tomd.py`）做了增量修改，并新增 3 个适配器/诊断脚本（`wx_fetch.py` / `wx_ocr.py` /
-`wx_session_check.py`）；抖音产物与 `main` 分支逐字一致。详见 `CHANGELOG.md` 与
-`docs/architecture.md`。
+新入口只做转发，历史笔记里的命令依然有效。本版对 4 个既有脚本（`dy.py` / `dy_fetch.py` /
+`dy_tomd.py` / `dy_browser_capture.py`）做了增量修改，并新增 3 个适配器/诊断脚本
+（`wx_fetch.py` / `wx_ocr.py` / `wx_session_check.py`）；抖音产物与 `main` 分支逐字一致。
+详见 `CHANGELOG.md` 与 `docs/architecture.md`。
 
 ## 快速开始
 
@@ -78,7 +79,7 @@ bash bin/douyin2md url "https://weixin.qq.com/sph/xxxx" -o ./notes      # 视频
 bash bin/douyin2md batch urls.txt -o ./notes                             # 批量（按来源分流）
 bash bin/douyin2md transcribe ./会议录音.mp4 -o 会议录音.json             # 本地单文件
 bash bin/douyin2md transcribe ./访谈集/ -o ./访谈转录/                    # 本地目录批量
-bash bin/douyin2md capture "https://v.douyin.com/xxxx/" -o ./.artifacts  # 风控兜底
+bash bin/douyin2md capture "https://v.douyin.com/xxxx/" -o ./.artifacts --fresh  # 手动取 mp4（全新游客会话）
 bash bin/douyin2md model list | status | download | path
 bash bin/douyin2md cookie --check
 bash bin/douyin2md doctor --json                                         # 机器可读体检
@@ -87,7 +88,17 @@ bash bin/douyin2md config                                                # 生�
 
 `url` / `batch` 先按来源分流：抖音走完整三段式；视频号走只读元数据 + 高清封面，产出
 `metadata_only` 文稿（自动声明缺失项，不臆造时间戳）；未知来源返回 `unsupported_source`。
-批量结束会输出状态清单。加 `--ocr` 可对视频号高清封面做本地文字识别（默认关闭，macOS 用
+批量结束会输出状态清单。
+
+**抖音直连被风控时自动兜底**：`dy_fetch.py` 先把短链解析成长链，直连仍失败
+（`Fresh cookies` / Argus / `a_bogus`）就自动用真实浏览器拦截 `aweme/detail` 取得
+mp4，映射成同一份 `meta.json` 契约后照常转写，最终仍是完整逐字稿。兜底默认用全新
+游客会话（复用旧 profile + 登录 cookie 易命中「验证码中间页」），日志会提示
+「已自动由浏览器拦截兜底取得真实媒体」，`meta.json` 带 `capture_fallback: true`。
+开关：`--no-capture-fallback` 禁用、`--force-capture` 跳过直连；单独取 mp4 用
+`capture --fresh`。**不破解验证码、不伪造签名。**
+
+加 `--ocr` 可对视频号高清封面做本地文字识别（默认关闭，macOS 用
 系统 Vision，结果单列「封面文字（OCR，须人工核对）」，**不得当作口播或时间戳**）：
 
 ```bash
@@ -108,6 +119,7 @@ bash bin/douyin2md to-md --meta ./notes/.artifacts/<id>.meta.json --transcript t
 
 常用参数：`--engine auto|sherpa|siliconflow|openai|local`、`--model`、`--language zh`、
 `--cookies`、`--cookies-from-browser`、`--no-timestamps`、`--keep-audio`、
+`--no-capture-fallback` / `--force-capture`、
 `--ocr` / `--ocr-backend auto|macos-vision|tesseract|none` / `--ocr-min-confidence 0.8`、
 `-o`、`-q`。`--config <文件>` 可放在命令任意位置。完整说明见 `docs/configuration.md`。
 
@@ -132,7 +144,7 @@ douyin2md/
 │   └── sources.py             # 来源判定 / 状态契约（唯一判定源，纯逻辑）
 ├── scripts/                   # 流水线脚本（兼容层，可单独调用）
 │   ├── dy.py                  # 链接 → Markdown（单条 + 批量，按来源分流）
-│   ├── dy_fetch.py            # 抖音元数据 + 音频（含短链解析与精确诊断）
+│   ├── dy_fetch.py            # 抖音元数据 + 音频（短链解析、精确诊断、风控自动兜底）
 │   ├── wx_fetch.py            # 视频号只读元数据 + 高清封面 + 可选 OCR（新增）
 │   ├── wx_ocr.py              # 封面 OCR 适配器（macOS Vision / tesseract，新增）
 │   ├── wx_session_check.py    # 授权后的会话字段差异验证（默认不执行，新增）
