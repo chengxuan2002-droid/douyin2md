@@ -34,12 +34,11 @@
 
 ### 作为 Agent Skill 安装（推荐）
 
-仓库：`git@github.com:chengxuan2002-droid/douyin2md.git`（当前为 **Private**，
-clone 需要该 GitHub 账号的访问权限；HTTPS 地址为
-`https://github.com/chengxuan2002-droid/douyin2md.git`）。
+仓库：`https://github.com/chengxuan2002-droid/douyin2md.git`（**Public**，可匿名 clone，
+无需账号权限；SSH 备选为 `git@github.com:chengxuan2002-droid/douyin2md.git`）。
 
 ```bash
-REPO=git@github.com:chengxuan2002-droid/douyin2md.git
+REPO=https://github.com/chengxuan2002-droid/douyin2md.git
 # 任选你的框架（详见 docs/agent-compatibility.md）
 git clone "$REPO" ~/.claude/skills/douyin2md      # Claude Code
 git clone "$REPO" ~/.agents/skills/douyin2md      # Codex / Copilot CLI / Gemini CLI
