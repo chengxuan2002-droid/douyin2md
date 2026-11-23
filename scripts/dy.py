@@ -12,6 +12,11 @@
   微信视频号  -> wx_fetch.py（只读元数据 + 高清封面）-> Markdown（metadata-only 降级）
   其它        -> unsupported_source，给出可解释提示，不再丢给 yt-dlp
 
+每条成功转写的内容默认产出两个文件：`<前缀>-逐字稿.md`（含附录 A 专名校正对照表、
+附录 B 可靠性说明）与 `<前缀>-总结.md`（要点式，逐条带时间节点）。总结由 agent 写标注
+JSON 后用 ``to-md --annotations`` 重新渲染；没有转写正文时只产出元数据文稿。
+``--single-file`` 保留旧的单篇合并产物。
+
 批量时先全部下载音频到一个目录，再统一交给转写脚本（本地模型只加载一次），
 避免每个视频重复加载模型。降级条目没有音频，不参与转写，但照常产出文稿。
 
@@ -161,6 +166,10 @@ def main() -> int:
     ap.add_argument("--no-timestamps", action="store_true")
     ap.add_argument("--no-frontmatter", action="store_true")
     ap.add_argument("--keep-audio", action="store_true", help="保留音频文件")
+    ap.add_argument("--annotations",
+                    help="标注 JSON，用于重新渲染单条的逐字稿附录与总结（仅单条模式）")
+    ap.add_argument("--single-file", action="store_true",
+                    help="旧行为：每条只产出一篇合并文稿（不拆总结、不带附录）")
     ap.add_argument("--ocr", action="store_true", help="视频号高清封面做本地 OCR（可选）")
     ap.add_argument("--ocr-backend", default="auto",
                     choices=["auto", "macos-vision", "tesseract", "none"])
@@ -174,6 +183,10 @@ def main() -> int:
 
     links = extract_links(args.url, args.links_file)
     batch = len(links) > 1
+    if batch and args.annotations:
+        print("[FAIL] --annotations 是单条标注，批量模式请逐条用 `to-md --annotations` 重新渲染",
+              file=sys.stderr)
+        return 2
     if not args.quiet:
         print(f"[模式] {'批量' if batch else '单条'}  {len(links)} 个链接", file=sys.stderr)
 
@@ -252,6 +265,10 @@ def main() -> int:
             md_cmd.append("--no-timestamps")
         if args.no_frontmatter:
             md_cmd.append("--no-frontmatter")
+        if args.annotations:
+            md_cmd += ["--annotations", args.annotations]
+        if args.single_file:
+            md_cmd.append("--single-file")
         p = run(md_cmd, f"生成 Markdown ({idx}/{len(metas)})", args.quiet)
         if p.returncode == 0:
             md_ok += 1
@@ -271,8 +288,12 @@ def main() -> int:
             shutil.rmtree(staging, ignore_errors=True)
 
     if not args.quiet:
-        print(f"\n🎉 完成: Markdown {md_ok}/{len(metas)} 篇，输出到 {out_dir}",
+        unit = "篇" if args.single_file else "组（逐字稿+总结）"
+        print(f"\n🎉 完成: Markdown {md_ok}/{len(metas)} {unit}，输出到 {out_dir}",
               file=sys.stderr)
+        if not args.single_file:
+            print("   总结若为 summary_status=pending，需写标注 JSON 后 "
+                  "`to-md --annotations` 重新渲染。", file=sys.stderr)
         if failed:
             print(f"   未处理 {len(failed)} 条（见上方日志），如需重试请单独处理。",
                   file=sys.stderr)

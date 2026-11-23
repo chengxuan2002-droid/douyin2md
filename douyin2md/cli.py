@@ -65,6 +65,10 @@ def _pipeline_parent() -> argparse.ArgumentParser:
     p.add_argument("--no-timestamps", action="store_true", default=None)
     p.add_argument("--no-frontmatter", action="store_true", default=None)
     p.add_argument("--keep-audio", action="store_true", default=None)
+    p.add_argument("--annotations", default=None,
+                   help="标注 JSON（专名校正 / 总结要点 / 可靠性说明），重新渲染两文件交付物")
+    p.add_argument("--single-file", action="store_true", default=None,
+                   help="旧行为：只输出一篇合并文稿（不拆总结、不带附录）")
     p.add_argument("--ocr", action="store_true", default=None,
                    help="视频号高清封面做本地 OCR（可选，结果须人工核对）")
     p.add_argument("--ocr-backend", default=None,
@@ -116,6 +120,10 @@ def _pipeline_args(ns, cfg) -> list[str]:
     ):
         if getattr(ns, attr, None) or cfg.get(key, False):
             args.append(flag)
+    # 交付形态开关只走命令行，不进配置文件（避免一处开关影响全部运行）
+    if getattr(ns, "single_file", False):
+        args.append("--single-file")
+    _opt(args, "--annotations", getattr(ns, "annotations", None))
     if getattr(ns, "quiet", False):
         args.append("-q")
     return args
@@ -157,10 +165,13 @@ def cmd_tomd(ns, cfg) -> int:
     _opt(args, "-o", ns.output_dir or cfg["output_dir"])
     _opt(args, "--filename", ns.filename)
     _opt(args, "--summary", ns.summary)
+    _opt(args, "--annotations", ns.annotations)
     if ns.no_timestamps:
         args.append("--no-timestamps")
     if ns.no_frontmatter:
         args.append("--no-frontmatter")
+    if getattr(ns, "single_file", False):
+        args.append("--single-file")
     if ns.stdout:
         args.append("--stdout")
     return _exec(args)
@@ -274,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", help="抖音/视频号链接或含链接的分享文案")
     p.set_defaults(func=cmd_url)
 
-    p = sub.add_parser("batch", parents=[shared], help="批量链接文件 → 每篇一个 Markdown（按来源分流）")
+    p = sub.add_parser("batch", parents=[shared], help="批量链接文件 → 每条一组逐字稿与总结（按来源分流）")
     p.add_argument("links_file", help="每行一个链接/分享文案的文件")
     p.set_defaults(func=cmd_batch)
 
@@ -290,12 +301,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--api-key", default=None, help="建议改用环境变量，避免出现在进程列表")
     p.set_defaults(func=cmd_transcribe)
 
-    p = sub.add_parser("to-md", help="元数据 JSON + 转写 JSON → Markdown")
+    p = sub.add_parser("to-md", help="元数据 JSON + 转写 JSON → 逐字稿与总结两个 Markdown")
     p.add_argument("--meta", required=True)
     p.add_argument("--transcript", default=None)
     p.add_argument("-o", "--output-dir", default=None)
     p.add_argument("--filename", default=None)
     p.add_argument("--summary", default=None)
+    p.add_argument("--annotations", default=None,
+                   help="标注 JSON：专名校正 / 总结要点 / 可靠性说明")
+    p.add_argument("--single-file", action="store_true",
+                   help="旧行为：只输出一篇合并文稿（产物与历史版本逐字一致）")
     p.add_argument("--no-timestamps", action="store_true")
     p.add_argument("--no-frontmatter", action="store_true")
     p.add_argument("--stdout", action="store_true")

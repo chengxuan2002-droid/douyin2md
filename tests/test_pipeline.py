@@ -162,6 +162,64 @@ class SingleModeTranscribeTest(unittest.TestCase):
         self.assertEqual(len(md), 2)
 
 
+class BundleFlagTest(unittest.TestCase):
+    """两文件交付：默认不加 --single-file；标注 JSON 只在单条模式透传。"""
+
+    def _md_cmd(self, extra):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            audio = out / "sample.mp3"
+            audio.write_bytes(b"fake-audio")
+            meta = {"aweme_id": "7653", "title": "测试", "author": "某作者",
+                    "audio_path": str(audio)}
+            calls = []
+
+            def fake_run(cmd, desc, quiet=False):
+                calls.append(list(cmd))
+                return completed()
+
+            argv = ["dy.py", DOUYIN, "-o", str(out), *extra]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(dy, "fetch_one",
+                                   return_value=(meta, audio, dy.STATUS_OK)), \
+                 mock.patch.object(dy, "run", side_effect=fake_run), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = dy.main()
+            self.assertEqual(rc, 0)
+            md = [c for c in calls if any("dy_tomd.py" in str(p) for p in c)]
+            self.assertEqual(len(md), 1)
+            return md[0]
+
+    def test_default_uses_two_file_output(self):
+        cmd = self._md_cmd([])
+        self.assertNotIn("--single-file", cmd)
+        self.assertNotIn("--annotations", cmd)
+
+    def test_single_file_flag_forwarded(self):
+        self.assertIn("--single-file", self._md_cmd(["--single-file"]))
+
+    def test_annotations_forwarded_in_single_mode(self):
+        cmd = self._md_cmd(["--annotations", "/tmp/ann.json"])
+        self.assertIn("--annotations", cmd)
+        self.assertIn("/tmp/ann.json", cmd)
+
+    def test_batch_rejects_annotations(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            lf = Path(td) / "urls.txt"
+            lf.write_text(DOUYIN + "\nhttps://v.douyin.com/def456/\n", encoding="utf-8")
+            argv = ["dy.py", "--links-file", str(lf), "--annotations", "/tmp/ann.json"]
+            err = io.StringIO()
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(dy, "run") as run, \
+                 contextlib.redirect_stderr(err):
+                rc = dy.main()
+        run.assert_not_called()
+        self.assertEqual(rc, 2)
+        self.assertIn("--annotations", err.getvalue())
+
+
 class SummaryAndLinksTest(unittest.TestCase):
     def test_status_summary_groups(self):
         err = io.StringIO()

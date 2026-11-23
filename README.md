@@ -1,7 +1,8 @@
 # douyin2md
 
-把一个抖音链接（或本地音视频）变成一篇带 YAML frontmatter 的 Markdown 文稿：
-元信息表 + 视频描述文案 + 带时间戳的口播转写正文。
+把一个抖音链接（或本地音视频）变成**两个** Markdown 交付物：一篇带 YAML frontmatter、
+带时间戳的**逐字稿**（末尾附「语音识别专名校正对照表」与「可靠性说明」），一篇要点式
+**总结**（视频主题 + 核心方法，逐条标注章节或时间节点，不写文章）。
 
 微信视频号链接会自动按来源降级：预览页不下发视频流，只取元数据与高清封面，产出明确
 标注缺失项的 `metadata_only` 文稿（不臆造转写或时间戳）。抖音直连若被 Argus / `a_bogus`
@@ -22,10 +23,11 @@
 | 命令依赖 cwd 或某个固定安装目录 | 入口用 `BASH_SOURCE` 自定位技能根，任意工作目录可调用 |
 | 各框架安装方式靠口头说明 | `docs/agent-compatibility.md` 逐框架给出目录与命令 |
 
-原始脚本 `scripts/*.py` 作为兼容层继续可单独调用，命令行参数与抖音产物格式保持兼容；
+原始脚本 `scripts/*.py` 作为兼容层继续可单独调用，命令行参数保持兼容；
 新入口只做转发，历史笔记里的命令依然有效。本版对 4 个既有脚本（`dy.py` / `dy_fetch.py` /
 `dy_tomd.py` / `dy_browser_capture.py`）做了增量修改，并新增 3 个适配器/诊断脚本
-（`wx_fetch.py` / `wx_ocr.py` / `wx_session_check.py`）；抖音产物与 `main` 分支逐字一致。
+（`wx_fetch.py` / `wx_ocr.py` / `wx_session_check.py`）。默认产物由单篇改为
+「逐字稿 + 总结」两个文件；加 `--single-file` 可回到与 `main` 分支逐字一致的单篇文稿。
 详见 `CHANGELOG.md` 与 `docs/architecture.md`。
 
 ## 快速开始
@@ -71,14 +73,39 @@ bash bin/douyin2md model download    # 本地中文模型，约 60MB
 bash bin/douyin2md cookie            # 浏览器登录导出 cookie
 ```
 
+## 输出：两个文件
+
+每次成功转写产出同一前缀的两个 Markdown：
+
+| 文件 | 内容 |
+| --- | --- |
+| `<作者>-<标题>-逐字稿.md` | frontmatter + 元信息表 + 视频文案 + 带 `[mm:ss]` 的转写正文 + **附录 A 语音识别专名校正对照表**（原识别 / 校正 / 出现位置）+ **附录 B 可靠性说明**（客观依据 / 结论支撑 / 需解释澄清项） |
+| `<作者>-<标题>-总结.md` | **视频主题**（核心话题、核心观点）+ **核心方法**（关键技术、实现思路、论证方式），一条要点一行，句末标 `（[mm:ss]）` 或 `（[mm:ss] · 章节名）` |
+
+总结由脚本渲染、由 agent 提供内容：`url` / `batch` 先出逐字稿和一份
+`summary_status: pending` 的总结骨架，随后按需写标注 JSON 重新渲染：
+
+```bash
+bash bin/douyin2md to-md \
+  --meta ./notes/.artifacts/<id>.meta.json \
+  --transcript ./notes/.artifacts/transcripts/<id>.json \
+  --annotations ./ann.json -o ./notes
+```
+
+标注 JSON 见 `examples/标注示例.json`，字段说明见 `SKILL.md`「输出形态」与
+`scripts/dy_tomd.py` 顶部文档字符串。`--single-file` 回到旧的单篇合并文稿
+（不拆总结、不带附录）；没有转写正文时只产出元数据文稿，不生成总结。
+
 ## 统一命令速查
 
 ```bash
-bash bin/douyin2md url "https://v.douyin.com/xxxx/" -o ./notes          # 单条抖音
+bash bin/douyin2md url "https://v.douyin.com/xxxx/" -o ./notes          # 单条抖音（逐字稿 + 总结）
 bash bin/douyin2md url "https://weixin.qq.com/sph/xxxx" -o ./notes      # 视频号（自动降级）
 bash bin/douyin2md batch urls.txt -o ./notes                             # 批量（按来源分流）
 bash bin/douyin2md transcribe ./会议录音.mp4 -o 会议录音.json             # 本地单文件
 bash bin/douyin2md transcribe ./访谈集/ -o ./访谈转录/                    # 本地目录批量
+bash bin/douyin2md to-md --meta m.json --transcript t.json --annotations ann.json -o ./notes  # 重新渲染
+bash bin/douyin2md to-md --meta m.json --transcript t.json --single-file -o ./notes           # 旧单篇产物
 bash bin/douyin2md capture "https://v.douyin.com/xxxx/" -o ./.artifacts --fresh  # 手动取 mp4（全新游客会话）
 bash bin/douyin2md model list | status | download | path
 bash bin/douyin2md cookie --check
@@ -119,6 +146,7 @@ bash bin/douyin2md to-md --meta ./notes/.artifacts/<id>.meta.json --transcript t
 
 常用参数：`--engine auto|sherpa|siliconflow|openai|local`、`--model`、`--language zh`、
 `--cookies`、`--cookies-from-browser`、`--no-timestamps`、`--keep-audio`、
+`--annotations`（重新渲染专名校正与总结）、`--single-file`（旧单篇产物）、
 `--no-capture-fallback` / `--force-capture`、
 `--ocr` / `--ocr-backend auto|macos-vision|tesseract|none` / `--ocr-min-confidence 0.8`、
 `-o`、`-q`。`--config <文件>` 可放在命令任意位置。完整说明见 `docs/configuration.md`。
@@ -149,13 +177,13 @@ douyin2md/
 │   ├── wx_ocr.py              # 封面 OCR 适配器（macOS Vision / tesseract，新增）
 │   ├── wx_session_check.py    # 授权后的会话字段差异验证（默认不执行，新增）
 │   ├── dy_transcribe.py       # 语音转文字
-│   ├── dy_tomd.py             # 拼装 Markdown
+│   ├── dy_tomd.py             # 渲染两个交付文件（逐字稿 + 附录 A/B、总结）
 │   ├── dy_model.py            # 本地模型管理
 │   ├── dy_cookie*.py          # cookie 获取 / 合并
 │   └── dy_browser_capture.py  # 浏览器拦截兜底
 ├── docs/                      # 框架兼容、配置、架构、排障
-├── examples/                  # 输出样例、链接清单、CLI 与提示词示例
-└── tests/                     # 零依赖单测：配置、入口、来源判定、适配器契约、降级与回归
+├── examples/                  # 逐字稿/总结样例、标注 JSON 模板、链接清单、CLI 与提示词示例
+└── tests/                     # 零依赖单测：配置、入口、来源判定、适配器契约、两文件契约与回归
 ```
 
 ## 深入文档

@@ -34,7 +34,7 @@ cli 层先给出来源提示，`dy.py::fetch_one()` 按结果分流：
 
 | 来源 | 适配器 | 产物 | 结果状态 |
 | --- | --- | --- | --- |
-| 抖音 | `dy_fetch.py`（直连失败自动 `capture_fallback`）→ `dy_transcribe.py` → `dy_tomd.py` | 逐字稿 | `ok` / `failed` |
+| 抖音 | `dy_fetch.py`（直连失败自动 `capture_fallback`）→ `dy_transcribe.py` → `dy_tomd.py` | 逐字稿 + 总结两个文件 | `ok` / `failed` |
 | 微信视频号 | `wx_fetch.py` → `dy_tomd.py` | 元数据 + 高清封面，`metadata_only` 文稿 | `metadata_only` / `media_blocked_by_platform` |
 | 未知来源 | 不调用任何抓取脚本 | 可解释的错误提示 | `unsupported_source` / `need_login` |
 
@@ -59,11 +59,18 @@ dy.py
  ├─ 2. dy_transcribe.py   音频/mp4 → 带 segments 时间戳的转写 JSON
  │        ├─ sherpa       本地离线（默认，模型在 ~/.douyin2md/models/）
  │        └─ siliconflow / openai 兼容接口（需 API Key）
- └─ 3. dy_tomd.py         元数据 + 转写 → Markdown（frontmatter + 元信息表 + [mm:ss] 正文）
+ └─ 3. dy_tomd.py         元数据 + 转写 → 两个交付文件
+         ├─ <前缀>-逐字稿.md   frontmatter + 元信息表 + [mm:ss] 正文 + 附录 A/B
+         └─ <前缀>-总结.md     视频主题 / 核心方法（要点式，逐条带时间节点）
 ```
 
+**两文件渲染是纯排版**：`dy_tomd.py` 不做语义归纳，总结内容来自 agent 写的标注 JSON
+（`--annotations`），脚本负责校验每条要点是否带章节/时间节点、把专名校正应用到正文并
+自动计算出现位置、汇总可靠性事实（转写覆盖、时间轴空白、校正命中率、要点统计）。
+`--single-file` 保留旧的单篇合并产物，用于兼容历史调用与管道。
+
 **兜底不改变下游契约**：`slim_from_detail()` 输出的字段集与 `slim()` 完全一致，
-`dy.py` 的转写/清理/文稿生成逻辑零改动；旧抖音 meta 产物与 `main` 分支逐字一致。
+`dy.py` 的转写/清理/文稿生成逻辑零改动；`--single-file` 下的文稿与 `main` 分支逐字一致。
 开关 `--no-capture-fallback`（禁用）/ `--force-capture`（跳过直连），
 `--no-audio` 时兜底透传 `--no-download` 只取元数据。
 
@@ -115,7 +122,12 @@ msToken + `a_bogus` 签名校验，yt-dlp 直连稳定报 `Fresh cookies ... are
 - 来源判定单一实现：`cli.py` 与 `scripts/` 共用 `douyin2md/sources.py`，脚本通过
   把仓库根插入 `sys.path` 导入，因此 `scripts/*.py` 仍可脱离入口单独调用。
 - 降级是一等契约：`extraction_status=metadata_only` 由 `meta.json` 驱动，
-  `dy_tomd.py` 自动输出缺失清单；旧抖音 meta 不新增任何字段，产物保持兼容。
+  `dy_tomd.py` 自动输出缺失清单；没有转写正文时不生成总结（不得臆造），
+  只产出元数据文稿。`--single-file` 下的旧抖音 meta 产物保持逐字兼容。
+- 两文件契约：默认产物为 `<前缀>-逐字稿.md` 与 `<前缀>-总结.md`；总结的每条要点必须
+  带章节或时间节点，缺位置会被渲染为「未标注」并计入附录 B，不静默放过。
+- 校正留痕：专名校正由 `corrections` 标注驱动，正文改为校正后写法，附录 A 记录
+  原识别结果与出现位置；未命中的条目保留并解释，不删除。
 - 视频号适配器只读：不绕过鉴权、客户端校验或 DRM，不尝试构造播放地址。
 - 封面 OCR 是**可选证据**：`--ocr` 默认关闭，后端失败自动降级；`cover_ocr` 只用于
   「封面文字（OCR，须人工核对）」区块，不进入转写正文、不生成时间戳。
