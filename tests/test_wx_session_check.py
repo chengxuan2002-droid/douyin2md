@@ -57,7 +57,7 @@ class ReportTest(unittest.TestCase):
         self.assertIn("未验证", r["conclusion"])
 
     def test_report_never_contains_cookie_values(self):
-        secret = "SUPER_SECRET_SESSION_VALUE"
+        secret = "YOUR_SESSION_VALUE_HERE"
         info = self.info()
         r = sc.build_report(payload(), "", payload(), "", info)
         blob = json.dumps(r, ensure_ascii=False)
